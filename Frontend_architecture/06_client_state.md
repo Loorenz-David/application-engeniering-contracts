@@ -2,7 +2,7 @@
 
 ## Definition
 
-Client state is UI state that does not originate from the backend and does not need to be synchronized with a server. Zustand v4 manages client state. The decision of which store to use is strict: if the data comes from the backend or must be persisted, it is not client state.
+Client state is UI state that does not originate from the backend and does not need to be synchronized with a server. Zustand v4 manages shared client state. The decision of which store to use is strict: if the data is backend-owned, it is server state and belongs in TanStack Query. If the data is local to one component, it belongs in `useState`.
 
 ---
 
@@ -10,7 +10,7 @@ Client state is UI state that does not originate from the backend and does not n
 
 | Data | Where it lives |
 |---|---|
-| Current user's identity (id, email, name, role, permissions) | Zustand auth store |
+| Current user's identity (id, email, name, roles, permissions) | Zustand auth store |
 | Current user's full profile (avatar, timezone, preferences) | TanStack Query — see [25_user_profile.md](25_user_profile.md) |
 | Access token | In-memory variable in `auth-token.ts` — not Zustand, not localStorage |
 | List of invoices fetched from the backend | TanStack Query |
@@ -22,6 +22,8 @@ Client state is UI state that does not originate from the backend and does not n
 | Search filter applied by the user | URL search params (via `useSearchParams`) — not Zustand |
 
 **If in doubt, prefer `useState` locally.** Reach for Zustand only when the state must be shared across routes or components that do not share a common ancestor, or when it must survive navigation.
+
+The auth store is the only allowed exception for backend-originated identity data. It stores the minimum session identity needed by the app shell: user ID, email, display name, roles, effective permissions, workspace ID, and authentication status. It is not a replacement for the user profile query and does not store tokens.
 
 ---
 
@@ -154,7 +156,40 @@ export const useThemeStore = create<ThemeState>()(
 );
 ```
 
-Only use `persist` for state the user has explicitly configured (theme, preferences). Never persist auth tokens through `persist` middleware — use `httpOnly` cookies or the dedicated `auth-token.ts` module.
+Only use `persist` for state the user has explicitly configured (theme, density, dismissed local UI hints). Never persist auth tokens through `persist` middleware — use `httpOnly` cookies or the dedicated `auth-token.ts` module.
+
+Persisted stores must be versioned and partialized so accidental fields are not written to storage:
+
+```ts
+export const useThemeStore = create<ThemeState>()(
+  persist(
+    (set) => ({
+      theme: 'system',
+      density: 'comfortable',
+      setTheme: (theme) => set({ theme }),
+      setDensity: (density) => set({ density }),
+    }),
+    {
+      name: 'app-ui-preferences',
+      version: 1,
+      partialize: (state) => ({
+        theme: state.theme,
+        density: state.density,
+      }),
+    },
+  ),
+);
+```
+
+User-specific client stores must expose their own `clearSessionState()` action and be cleared on sign-out or workspace switch. Do not rely on page reloads to remove selected rows, temporary drafts, wizard progress, or open workspace-specific panels.
+
+---
+
+## Permissions in client state
+
+The auth store may hold `roles` and `permissions` because they are part of the current session identity. Feature authorization logic still reads permissions through `usePermissions()`; components do not branch directly on `user.roles`.
+
+Roles are display and app-shell metadata. Permissions are effective backend-provided capability keys. The frontend never expands roles into permissions and never stores a frontend role-permission map in Zustand.
 
 ---
 
@@ -188,7 +223,10 @@ const total = useItemsStore((s) => s.items.reduce((sum, i) => sum + i.amount, 0)
 
 - **Never store server data in Zustand.** If it comes from the backend, use TanStack Query.
 - **Never store auth tokens using Zustand's `persist` middleware.** Tokens in `localStorage` are accessible to XSS. Use `httpOnly` cookies.
+- **Never persist the auth store.** Session restoration comes from the refresh cookie plus current-user request, not browser storage.
 - **Never access a store inside another store.** Stores are independent units. Coordination happens in hooks that read from multiple stores.
+- **Never import `apiClient`, query hooks, or `queryClient` inside a store.** Stores update local state only; async orchestration belongs in hooks, actions, providers, or controllers.
 - **Never put business logic in store actions.** Actions set state. Business logic lives in hooks.
+- **Never map roles to permissions in a store.** Effective permissions come from the backend session/current-user payload.
 - **Never create a store for state that is only used in one component.** Use `useState`.
 - **Never reset the entire store to handle a logout.** Clear only the fields that contain user-specific data, and only in the store's own `clearAuth` action.

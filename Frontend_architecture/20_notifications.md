@@ -14,7 +14,7 @@ Zustand notification store
 NotificationRenderer  (app-specific UI)
 ```
 
-No component touches the store directly. No component decides when a notification should appear.
+No component touches the store directly. Components may use `useNotify()` only for purely local UI events, such as "Copied to clipboard"; mutation, API, auth, and socket outcomes are notified from their owning logic layer.
 
 ---
 
@@ -42,9 +42,14 @@ Pass it once at the app root:
 
 ```tsx
 // src/app/providers.tsx
-<NotificationProvider config={notificationConfig}>
-  {children}
-</NotificationProvider>
+export function AppProviders({ children }: { children: React.ReactNode }) {
+  return (
+    <NotificationProvider config={notificationConfig}>
+      {children}
+      <NotificationRenderer />
+    </NotificationProvider>
+  );
+}
 ```
 
 ---
@@ -271,13 +276,13 @@ export function NotificationRenderer() {
 Mount the renderer outside the router so it is always visible regardless of the current route:
 
 ```tsx
-// src/app/App.tsx
-export function App() {
+// src/app/providers.tsx
+export function AppProviders({ children }: { children: React.ReactNode }) {
   return (
-    <Providers>
-      <RouterProvider router={router} />
+    <NotificationProvider config={notificationConfig}>
+      {children}
       <NotificationRenderer />  {/* outside router — always visible */}
-    </Providers>
+    </NotificationProvider>
   );
 }
 ```

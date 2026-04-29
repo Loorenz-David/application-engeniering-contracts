@@ -54,7 +54,7 @@ class Record(db.Model):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     workspace_id: Mapped[int] = mapped_column(Integer, ForeignKey("workspaces.id"), nullable=False, index=True)
-    client_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    client_id: Mapped[str] = mapped_column(String(64), nullable=False, unique=True, index=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),
@@ -69,7 +69,7 @@ class Record(db.Model):
 - Use SQLAlchemy 2.x `Mapped` + `mapped_column` style. Never use the legacy `Column()` style for new tables.
 - All datetime columns use `DateTime(timezone=True)`. The engine is configured for UTC (`-c timezone=UTC`).
 - All foreign key columns are `nullable=False` unless there is an explicit domain reason for nullability.
-- Every table has a `client_id` column (string UUID) that uniquely identifies the record to the client. This decouples API identity from DB identity.
+- Every user-facing table has a `client_id` column (string UUID) that uniquely identifies the record to the client. This decouples API identity from DB identity. See [38_identity_resolution.md](38_identity_resolution.md).
 - Indexes go on columns used in `WHERE` clauses in queries. Explain the index in a migration comment if it is non-obvious.
 
 **Relationship rules:**

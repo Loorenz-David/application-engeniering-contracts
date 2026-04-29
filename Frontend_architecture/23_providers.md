@@ -211,9 +211,11 @@ export function CreateInvoicePage() {
   const navigate = useNavigate();
   return (
     <RouteErrorBoundary>
-      <CreateInvoiceFlowProvider onComplete={(id) => navigate(ROUTES.invoiceDetail(id))}>
-        <CreateInvoiceWizard />
-      </CreateInvoiceFlowProvider>
+      <Suspense fallback={<CreateInvoicePageSkeleton />}>
+        <CreateInvoiceFlowProvider onComplete={(id) => navigate(ROUTES.invoiceDetail(id))}>
+          <CreateInvoiceWizard />
+        </CreateInvoiceFlowProvider>
+      </Suspense>
     </RouteErrorBoundary>
   );
 }
@@ -269,4 +271,4 @@ A good signal that you need a provider: when you find yourself passing the same 
 - **Never export the context object.** Only export the Provider component and the consumer hook.
 - **Never initialize context with a default value other than `null`.** Default values hide missing-provider bugs. Throw in the consumer hook instead.
 - **Never create a provider for state that is only used by one component.** If only one component needs it, `useState` inside that component is the right tool.
-- **Never use a provider to share server state that TanStack Query already caches globally.** If two components on the same page both need invoice data, they can both call `useInvoicesQuery` with the same key — TanStack Query deduplicates the request. A provider is only needed when they also need shared local state (filters, selection, step).
+- **Never use a provider only to duplicate TanStack Query's cache.** If two independent controllers need the same query, TanStack Query deduplicates the request. Feature components still do not call query hooks directly; they read data through their section provider.

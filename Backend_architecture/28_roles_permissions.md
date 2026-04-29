@@ -102,11 +102,11 @@ Good permissions are operation-scoped, not feature-scoped:
 
 ```
 # Good — one operation, clear meaning
-create_records
-delete_records
-export_data
-manage_members
-manage_billing
+record:create
+record:delete
+record:export
+member:manage
+billing:manage
 
 # Bad — too broad, meaningless
 records_access
@@ -127,34 +127,36 @@ class Permission(str, enum.Enum):
     """
     All atomic capabilities in this application.
 
-    Naming rule: verb_noun in snake_case.
+    Naming rule: feature:action in lowercase.
+    The feature segment is the singular domain noun.
+    The action segment is the operation verb.
     Group by domain with a comment header.
     A permission protects an operation, not a feature.
     """
 
     # ── Workspace administration ───────────────────────────────────
-    MANAGE_WORKSPACE    = "manage_workspace"    # settings, name, timezone
-    MANAGE_MEMBERS      = "manage_members"      # invite, deactivate users
-    MANAGE_ROLES        = "manage_roles"        # create, edit, delete roles
-    VIEW_MEMBERS        = "view_members"
+    MANAGE_WORKSPACE    = "workspace:manage"    # settings, name, timezone
+    MANAGE_MEMBERS      = "member:manage"       # invite, deactivate users
+    MANAGE_ROLES        = "role:manage"         # create, edit, delete roles
+    VIEW_MEMBERS        = "member:view"
 
-    MANAGE_BILLING      = "manage_billing"      # subscription, invoices
-    VIEW_BILLING        = "view_billing"
+    MANAGE_BILLING      = "billing:manage"      # subscription, invoices
+    VIEW_BILLING        = "billing:view"
 
     # ── [Your domain A] ───────────────────────────────────────────
-    VIEW_RECORDS        = "view_records"
-    CREATE_RECORDS      = "create_records"
-    EDIT_RECORDS        = "edit_records"
-    DELETE_RECORDS      = "delete_records"
-    EXPORT_RECORDS      = "export_records"
+    VIEW_RECORDS        = "record:view"
+    CREATE_RECORDS      = "record:create"
+    EDIT_RECORDS        = "record:edit"
+    DELETE_RECORDS      = "record:delete"
+    EXPORT_RECORDS      = "record:export"
 
     # ── [Your domain B] ───────────────────────────────────────────
-    VIEW_REPORTS        = "view_reports"
-    MANAGE_REPORTS      = "manage_reports"
+    VIEW_REPORTS        = "report:view"
+    MANAGE_REPORTS      = "report:manage"
 
     # ── [Your domain C] ───────────────────────────────────────────
-    MANAGE_INTEGRATIONS = "manage_integrations"
-    VIEW_INTEGRATIONS   = "view_integrations"
+    MANAGE_INTEGRATIONS = "integration:manage"
+    VIEW_INTEGRATIONS   = "integration:view"
 ```
 
 Replace the domain sections with the actual domains of your application. The workspace administration block is nearly universal — keep it in every application. The rest is yours to define.
@@ -163,12 +165,14 @@ Replace the domain sections with the actual domains of your application. The wor
 
 | Rule | Example |
 |---|---|
-| `verb_noun` in snake_case | `create_orders`, `view_analytics` |
-| Verb describes the operation level | `view_` / `create_` / `edit_` / `delete_` / `manage_` / `export_` / `publish_` |
-| `manage_` means full CRUD + sub-operations | `manage_members` covers invite, edit, deactivate |
-| Noun is the resource being protected | `_orders`, `_members`, `_billing`, `_reports` |
-| No `can_`, no `allow_`, no `has_` prefix | `create_orders`, not `can_create_orders` |
-| No tier names in permission names | `edit_records`, not `admin_edit_records` |
+| `feature:action` in lowercase | `record:create`, `report:export` |
+| Feature is the singular domain noun | `record:`, `member:`, `billing:`, `report:` |
+| Action is the operation verb | `view` / `create` / `edit` / `delete` / `manage` / `export` / `publish` |
+| `manage` covers full CRUD + sub-operations | `member:manage` covers invite, edit, deactivate |
+| No tier names in permission names | `record:edit`, not `admin:edit_record` |
+| No `can_`, `allow_`, or `has_` prefix on either segment | `record:create`, not `can_create:record` |
+
+This format is required because the frontend checks permission strings directly via set membership (`permissionSet.has(key)`). The frontend declares its permission keys as `'feature:action'` constants in each feature's `permissions.ts`. The strings must match exactly — see [Frontend_architecture/19_permissions.md](../../Frontend_architecture/19_permissions.md).
 
 ### Default permission sets per tier
 
@@ -234,7 +238,7 @@ class WorkspaceRole(db.Model):
 `permissions` is a JSONB list of strings — the `.value` properties from your `Permission` enum:
 
 ```json
-["view_records", "create_records", "edit_records", "view_reports"]
+["record:view", "record:create", "record:edit", "report:view"]
 ```
 
 ### System roles vs custom roles
@@ -593,6 +597,9 @@ services/
 - [ ] JWT includes `base_role_id` and `permissions: list[str]`
 - [ ] `ctx.require_permission()` is the first line of every write command
 - [ ] Unknown permission strings are rejected at write time (validate against `Permission` enum)
+- [ ] JWT includes `base_role_id` and `permissions: list[str]` in `feature:action` format
+- [ ] Sign-in, token-refresh, and `/api/v1/me` responses include `user.roles` (workspace role names) and `user.permissions` (feature:action strings)
+- [ ] `user.id` and `workspace_id` in all responses are `client_id` UUID strings — never internal integers
 
 **What is absent (intentionally):**
 - [ ] No generic constraint tables (`DateRangeAccessRule`, `StateTransitionRule`)
@@ -613,3 +620,88 @@ services/
 | Top tier restricted by permissions | ADMIN role with `VIEW_BILLING` removed | Admins can always be locked out. Top tier must bypass permission checks. |
 | Mutable tier IDs | Renaming base_role_id=2 from MEMBER to something else | IDs are in JWTs. Changing them invalidates all active sessions silently. |
 | One permission for a broad feature | `ORDERS_ACCESS = "orders_access"` | Too coarse. Cannot grant view without create. Use `VIEW_`, `CREATE_`, `EDIT_`, `DELETE_` separately. |
+
+---
+
+## Part 11 — Frontend API contract
+
+The frontend consumes three auth-related endpoints. All three must return consistent field shapes so the frontend `AuthProvider`, auth store, and `usePermissions()` hook work correctly.
+
+### The three endpoints
+
+| Endpoint | When called | Response |
+|---|---|---|
+| `POST /api/v1/auth/sign-in` | User signs in | `{ access_token, user, workspace_id }` |
+| `POST /api/v1/auth/refresh` | On boot + token expiry | Same shape as sign-in |
+| `GET  /api/v1/me`           | On boot + after profile update | Full profile — superset of sign-in user |
+
+### Shared `user` object
+
+Every auth endpoint returns a `user` object with these fields:
+
+```json
+{
+    "id":          "550e8400-e29b-41d4-a716-446655440000",
+    "email":       "jane@example.com",
+    "name":        "Jane Smith",
+    "roles":       ["Senior Editor"],
+    "permissions": ["record:view", "record:create", "record:edit", "report:view"]
+}
+```
+
+| Field | Type | Source | Purpose |
+|---|---|---|---|
+| `id` | UUID string | `user.client_id` | Public identifier — never the internal integer `id` |
+| `email` | string | `user.email` | Identity |
+| `name` | string | `user.name` | Display name |
+| `roles` | `string[]` | `[WorkspaceRole.name]` | Display + broad app-shell routing only |
+| `permissions` | `string[]` | `WorkspaceRole.permissions` | `feature:action` strings — frontend `can()` checks these |
+
+### `roles` — what to put in it
+
+`roles` contains the workspace role name(s) for the current session. In the standard model each user has exactly one `WorkspaceRole` per workspace membership, so the array has one element. Return it as an array to match the frontend type and remain forwards-compatible.
+
+The role name is the human-readable `WorkspaceRole.name` — e.g. `"Admin"`, `"Member"`, `"Senior Editor"`. The frontend uses it only for:
+- displaying the user's role label
+- selecting the default landing route or navigation preset
+- separating major app surfaces (admin console vs field app)
+
+The frontend **never** does `user.roles.includes("admin")` to gate a feature operation. Features use `can(permission)`, not role identity.
+
+### `permissions` — must match frontend key format exactly
+
+The frontend's `can()` hook checks `permissionSet.has(key)` — a direct string equality check against the keys declared in each feature's `permissions.ts`. The `permissions` array returned by the backend must use identical `feature:action` strings.
+
+```
+Backend Permission enum value    Frontend permission key   Match?
+"record:create"               →  'record:create'           ✓
+"create_records"              →  'record:create'           ✗ — can() returns false
+```
+
+Mismatched formats silently break authorization UI — buttons disappear or stay visible for the wrong users with no error.
+
+### Full `/api/v1/me` response
+
+`GET /api/v1/me` is a superset of the sign-in user object. It adds profile fields read from the `User` model:
+
+```json
+{
+    "id":             "550e8400-e29b-41d4-a716-446655440000",
+    "email":          "jane@example.com",
+    "name":           "Jane Smith",
+    "roles":          ["Senior Editor"],
+    "permissions":    ["record:view", "record:create", "record:edit", "report:view"],
+    "workspace_id":   "7f3c4d2a-1b5e-4f8a-9c0d-2e6f7a8b9c1d",
+    "avatar_file_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+    "timezone":       "America/New_York",
+    "preferences": {
+        "email_notifications": true,
+        "theme": "system"
+    },
+    "created_at": "2025-01-15T10:30:00+00:00"
+}
+```
+
+`permissions` on this endpoint is re-read from the `WorkspaceRole` record, not from the JWT, so permission updates take effect immediately rather than waiting for token expiry. The frontend `AuthProvider` re-hydrates the auth store from this response on every boot.
+
+See [10_auth.md § Sign-in response shape](10_auth.md) and [10_auth.md § GET /api/v1/me](10_auth.md) for the full Python implementation.

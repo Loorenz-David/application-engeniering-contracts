@@ -56,6 +56,17 @@ def list_records(ctx: ServiceContext) -> dict:
 
 Never return records across workspace boundaries. This is not optional.
 
+Single-entity queries resolve public IDs through the domain resolver:
+
+```python
+def get_record(ctx: ServiceContext) -> dict:
+    request = parse_get_record_request(ctx.incoming_data)
+    record = resolve_record(ctx, request.ref)
+    return {"record": serialize_record(record)}
+```
+
+The resolver applies workspace scope and soft-delete filtering. See [38_identity_resolution.md](38_identity_resolution.md).
+
 ---
 
 ## Pagination contract
@@ -109,6 +120,8 @@ def list_records(ctx: ServiceContext) -> dict:
     }
 ```
 
+The pagination cursor may use internal `id` as a stable tie-breaker because cursors are opaque. Do not expose that internal `id` as a resource identifier in the serialized item.
+
 ---
 
 ## Serialization
@@ -122,7 +135,6 @@ from my_app.models.tables.<domain>.record import Record
 
 def serialize_record(instance: Record) -> dict:
     return {
-        "id": instance.id,
         "client_id": instance.client_id,
         "name": instance.name,
         "status": instance.status,
@@ -138,7 +150,7 @@ def serialize_records(instances: list[Record], ctx) -> list[dict]:
 **Rules:**
 - Serializers are pure functions. They do not query the database.
 - Serializers use `isoformat()` for all datetime fields. Never return a raw `datetime` object.
-- Serializers never expose internal database IDs without also exposing `client_id`. Prefer `client_id` as the primary identifier in API responses.
+- Serializers do not expose internal database IDs in public API responses unless there is a documented internal-admin use case. Prefer `client_id` as the primary identifier in API responses.
 - Never return a raw ORM instance from a query. Always serialize before returning.
 
 ---

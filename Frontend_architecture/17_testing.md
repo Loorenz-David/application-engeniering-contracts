@@ -58,7 +58,10 @@ describe('useInvoicesQuery', () => {
   it('returns invoices on success', async () => {
     server.use(
       http.get('/api/v1/invoices', () =>
-        HttpResponse.json({ items: [{ id: '1', number: 'INV-001', ... }], total: 1 }),
+        HttpResponse.json({
+          items: [{ id: '9f3fb6f8-6f64-4e4e-8d0b-50f4d8706df6', number: 'INV-001', ... }],
+          total: 1,
+        }),
       ),
     );
 
@@ -96,7 +99,9 @@ describe('CreateInvoiceForm', () => {
   it('submits valid data and calls onSuccess', async () => {
     server.use(
       http.post('/api/v1/invoices', () =>
-        HttpResponse.json({ invoice: { id: 'inv-1', number: 'INV-001', ... } }),
+        HttpResponse.json({
+          invoice: { id: '9f3fb6f8-6f64-4e4e-8d0b-50f4d8706df6', number: 'INV-001', ... },
+        }),
       ),
     );
 
@@ -106,7 +111,9 @@ describe('CreateInvoiceForm', () => {
     await userEvent.type(screen.getByLabelText('Due date'), '2026-06-01T00:00');
     await userEvent.click(screen.getByRole('button', { name: 'Create Invoice' }));
 
-    await waitFor(() => expect(onSuccess).toHaveBeenCalledWith('inv-1'));
+    await waitFor(() =>
+      expect(onSuccess).toHaveBeenCalledWith('9f3fb6f8-6f64-4e4e-8d0b-50f4d8706df6'),
+    );
   });
 
   it('shows field errors on validation_failed response', async () => {

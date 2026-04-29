@@ -164,6 +164,8 @@ def update_record_route(record_client_id: str):
 
 The command reads `client_id` from `ctx.incoming_data` via its request parser, exactly as it reads any other field.
 
+Public routes use `client_id` path parameters. Internal integer `id` values are not public route identifiers. Services that need to resolve either `client_id` or a trusted internal `id` use the identity resolver; routers do not perform lookup logic. See [38_identity_resolution.md](38_identity_resolution.md).
+
 ---
 
 ## Rules
@@ -172,6 +174,7 @@ The command reads `client_id` from `ctx.incoming_data` via its request parser, e
 - No business data is extracted or modified in the router. `incoming_data` goes directly into the context untouched.
 - Do not pop flags out of `incoming_data` in the router (e.g., `incoming_data.pop("prevent_event_bus")`). The command is responsible for interpreting its own input.
 - URL path parameters are the only data the router merges into `incoming_data`. All other data comes from the request body (`request.get_json()`) or query string (`request.args`).
+- Public resource path parameters are `client_id` values. Do not expose internal integer IDs in public routes.
 
 ---
 
@@ -234,13 +237,13 @@ This is a router-level concern. The service receives a plain dict.
 | Intent | Method | URL pattern |
 |---|---|---|
 | List resources | GET | `/api/v1/records/` |
-| Get one resource | GET | `/api/v1/records/<int:id>` |
+| Get one resource | GET | `/api/v1/records/<string:record_client_id>` |
 | Create | PUT | `/api/v1/records/` |
-| Update (partial) | PATCH | `/api/v1/records/` |
-| Delete | DELETE | `/api/v1/records/` |
-| Sub-resource action | PATCH | `/api/v1/records/<int:id>/archive` |
+| Update (partial) | PATCH | `/api/v1/records/<string:record_client_id>` |
+| Delete | DELETE | `/api/v1/records/<string:record_client_id>` |
+| Sub-resource action | PATCH | `/api/v1/records/<string:record_client_id>/archive` |
 
-Use REST resource naming. Actions that do not fit CRUD go as sub-resource endpoints with a descriptive path segment (`/archive`, `/state/<int:state_id>`).
+Use REST resource naming. Actions that do not fit CRUD go as sub-resource endpoints with a descriptive path segment (`/archive`, `/state/<string:state_client_id>`).
 
 ---
 

@@ -60,6 +60,8 @@ my_app/
 
 The domain layer **may** receive ORM model instances as arguments (to read their fields), but it must not call any database methods on them.
 
+Domain functions stay pure. If a complex command needs to track touched entities, pending events, or cascading response data, that tracking belongs in service-layer orchestration using `WorkContext`, not in the pure domain layer. See [39_work_context.md](39_work_context.md).
+
 ---
 
 ## Domain function patterns
@@ -160,13 +162,15 @@ Called from the command after loading the entity:
 ```python
 # services/commands/<resource>/update_record_state.py
 from my_app.domain.<resource>.<resource>_states import assert_valid_transition
+from my_app.services.identity.records import resolve_record
 
 
-def update_record_state(ctx: ServiceContext, record_id: int) -> dict:
+def update_record_state(ctx: ServiceContext) -> dict:
     ctx.require_permission(Permission.MANAGE_RECORDS)
     request = parse_update_record_state_request(ctx.incoming_data)
 
-    record = _load_record(ctx, record_id)
+    # resolve_record enforces workspace_id and is_deleted filtering — see 38_identity_resolution.md
+    record = resolve_record(ctx, request.ref)
     assert_valid_transition(record.state_id, request.target_state_id)
 
     with db.session.begin():

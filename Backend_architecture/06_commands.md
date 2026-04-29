@@ -75,6 +75,10 @@ services/commands/<domain>/
 
 **Never** pass raw `ctx.incoming_data` dicts into domain functions or ORM constructors without parsing first.
 
+When a command needs an existing entity, the request parser builds an `EntityRef` and the command resolves it through the domain resolver. Do not hand-roll `workspace_id` / `client_id` lookup filters in each command. See [38_identity_resolution.md](38_identity_resolution.md).
+
+When a command changes multiple related entities or needs to return backend-derived cascading changes, use a command-local `WorkContext`. Do not add touched entities or pending events to `ServiceContext`. See [39_work_context.md](39_work_context.md).
+
 ---
 
 ## Request parser pattern
@@ -85,13 +89,15 @@ from pydantic import BaseModel, field_validator
 
 
 class RecordCreateRequest(BaseModel):
-    client_id: str
+    client_id: str | None = None
     name: str
     category_id: int | None = None
 
     @field_validator("client_id")
     @classmethod
-    def client_id_must_not_be_empty(cls, v: str) -> str:
+    def client_id_must_not_be_empty(cls, v: str | None) -> str | None:
+        if v is None:
+            return v
         if not v.strip():
             raise ValueError("client_id cannot be blank.")
         return v
@@ -106,6 +112,8 @@ def parse_create_record_request(data: dict) -> RecordCreateRequest:
 ```
 
 Pydantic V2 (`model_validate`) is the standard. Convert `ValidationError` into `ValidationFailed` inside the parser function so it crosses layer boundaries correctly.
+
+For first-party create commands, `client_id` is accepted from the caller when provided. Frontend-created entities send it for optimistic UI. Backend-created entities may generate it server-side. Duplicate `client_id` requests are handled idempotently by returning the existing entity.
 
 ---
 
@@ -196,6 +204,24 @@ def create_records_batch(ctx: ServiceContext) -> dict:
 
     emit_record_events(ctx, pending_events)
     return {"created": [serialize_record(r) for r in instances]}
+```
+
+For batch updates to existing rows, resolve all targets before mutating:
+
+```python
+def archive_records(ctx: ServiceContext) -> dict:
+    request = parse_archive_records_request(ctx.incoming_data)
+    ctx.require_permission(Permission.ARCHIVE_RECORDS)
+    work = RecordWorkContext()
+
+    with db.session.begin():
+        records = resolve_records(ctx, request.refs, for_update=True)
+
+        for record in records:
+            archive_record(record, work)
+
+    emit_record_events(ctx, work.events)
+    return {"records": serialize_records(work.records.values(), ctx)}
 ```
 
 ---

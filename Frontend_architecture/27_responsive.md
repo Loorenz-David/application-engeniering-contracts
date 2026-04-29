@@ -112,7 +112,7 @@ Mount it once at the app root, outside the router:
 // src/app/providers.tsx
 import { BreakpointProvider } from '@/providers/BreakpointProvider';
 
-export function Providers({ children }: { children: React.ReactNode }) {
+export function AppProviders({ children }: { children: React.ReactNode }) {
   return (
     <BreakpointProvider>
       <QueryClientProvider client={queryClient}>
@@ -230,13 +230,15 @@ Both `InvoiceTable` and `InvoiceCardList` receive the same props from the same c
 
 ## Shared primitives — built-in responsiveness
 
-UI primitives that behave differently across devices encapsulate the breakpoint logic internally. Callers use a single component — they never branch on device in the feature layer.
+UI primitives that behave differently across devices encapsulate the breakpoint logic internally. Callers use a single component — they never branch on device in the feature layer. Structural enter/exit animation for dialogs, drawers, and sheets follows [31_animations.md](31_animations.md).
 
 ### Dialog: modal on desktop, bottom sheet on mobile
 
 ```tsx
 // src/components/ui/Dialog.tsx
+import { m } from 'framer-motion';
 import { useBreakpoint } from '@/providers/BreakpointProvider';
+import { transitions } from '@/lib/animation';
 
 type DialogProps = {
   open:     boolean;
@@ -250,19 +252,18 @@ export function Dialog({ open, onClose, title, children }: DialogProps) {
 
   if (isMobile) {
     return (
-      <div
+      <m.div
         role="dialog"
         aria-modal="true"
         aria-labelledby="dialog-title"
-        className={cn(
-          'fixed inset-x-0 bottom-0 z-50 rounded-t-2xl bg-background p-6 shadow-lg',
-          'transition-transform duration-300',
-          open ? 'translate-y-0' : 'translate-y-full',
-        )}
+        className="fixed inset-x-0 bottom-0 z-50 rounded-t-2xl bg-background p-6 shadow-lg"
+        initial={{ y: '100%' }}
+        animate={{ y: open ? 0 : '100%' }}
+        transition={transitions.surface}
       >
         <h2 id="dialog-title" className="text-lg font-semibold mb-4">{title}</h2>
         {children}
-      </div>
+      </m.div>
     );
   }
 
@@ -298,23 +299,27 @@ Feature components use `<Dialog>` without caring about device type:
 
 ```tsx
 // src/components/ui/Drawer.tsx
+import { m } from 'framer-motion';
 import { useBreakpoint } from '@/providers/BreakpointProvider';
+import { transitions } from '@/lib/animation';
 
 export function Drawer({ open, onClose, title, children }: DrawerProps) {
   const { isMobile } = useBreakpoint();
 
   return (
-    <div
+    <m.div
       className={cn(
-        'fixed z-40 bg-background shadow-xl transition-transform duration-300',
+        'fixed z-40 bg-background shadow-xl',
         isMobile
           ? 'inset-0'                                    // full screen on mobile
           : 'right-0 top-0 h-full w-[480px] border-l',  // side panel on desktop
-        open ? 'translate-x-0' : isMobile ? 'translate-y-full' : 'translate-x-full',
       )}
+      initial={isMobile ? { y: '100%' } : { x: '100%' }}
+      animate={open ? { x: 0, y: 0 } : isMobile ? { y: '100%' } : { x: '100%' }}
+      transition={transitions.surface}
     >
       {children}
-    </div>
+    </m.div>
   );
 }
 ```

@@ -4,6 +4,8 @@
 
 React Router v6 with the data router API (`createBrowserRouter`) is the routing layer. All routes are defined in one place, all page components are lazy-loaded, and protected routes are enforced by a guard component.
 
+Route-level lazy loading follows [30_dynamic_loading.md](30_dynamic_loading.md). The router imports page modules only; it never imports feature providers, feature components, or feature internals directly.
+
 ---
 
 ## Route configuration
@@ -13,70 +15,86 @@ All routes are declared in `src/app/router.tsx`. No routes are defined anywhere 
 ```tsx
 // src/app/router.tsx
 import { createBrowserRouter, redirect } from 'react-router-dom';
-import { lazy, Suspense } from 'react';
+import { RootRoute } from '@/app/RootRoute';
 import { AppShell } from '@/components/ui/AppShell';
-import { FullPageSpinner } from '@/components/ui/FullPageSpinner';
+import { lazyRoute } from '@/lib/lazy-route';
 import { ProtectedRoute } from '@/features/auth';
 import { GuestRoute } from '@/features/auth';
 
-// Every page is lazy-loaded
-const InvoicesPage = lazy(() =>
-  import('@/pages/invoices/InvoicesPage').then((m) => ({ default: m.InvoicesPage })),
-);
-const InvoiceDetailPage = lazy(() =>
-  import('@/pages/invoices/InvoiceDetailPage').then((m) => ({ default: m.InvoiceDetailPage })),
-);
-const SignInPage = lazy(() =>
-  import('@/pages/auth/SignInPage').then((m) => ({ default: m.SignInPage })),
-);
-
-const withSuspense = (Component: React.ComponentType) => (
-  <Suspense fallback={<FullPageSpinner />}>
-    <Component />
-  </Suspense>
-);
-
 export const router = createBrowserRouter([
-  // Auth routes (public only — redirect to app if already signed in)
   {
-    element: <GuestRoute />,
+    element: <RootRoute />,
     children: [
-      { path: '/sign-in', element: withSuspense(SignInPage) },
-    ],
-  },
-
-  // App routes (require authentication)
-  {
-    element: <ProtectedRoute />,
-    children: [
+      // Auth routes (public only — redirect to app if already signed in)
       {
-        element: <AppShell />,
+        element: <GuestRoute />,
         children: [
-          { path: '/', loader: () => redirect('/invoices') },
-          { path: '/invoices', element: withSuspense(InvoicesPage) },
-          { path: '/invoices/:invoiceId', element: withSuspense(InvoiceDetailPage) },
+          {
+            path: '/sign-in',
+            element: lazyRoute(() =>
+              import('@/pages/auth/SignInPage').then((m) => ({ default: m.SignInPage })),
+            ),
+          },
         ],
+      },
+
+      // App routes (require authentication)
+      {
+        element: <ProtectedRoute />,
+        children: [
+          {
+            element: <AppShell />,
+            children: [
+              { path: '/', loader: () => redirect('/invoices') },
+              {
+                path: '/invoices',
+                element: lazyRoute(() =>
+                  import('@/pages/invoices/InvoicesPage').then((m) => ({
+                    default: m.InvoicesPage,
+                  })),
+                ),
+              },
+              {
+                path: '/invoices/:invoiceId',
+                element: lazyRoute(() =>
+                  import('@/pages/invoices/InvoiceDetailPage').then((m) => ({
+                    default: m.InvoiceDetailPage,
+                  })),
+                ),
+              },
+            ],
+          },
+        ],
+      },
+
+      // Catch-all
+      {
+        path: '*',
+        element: lazyRoute(() =>
+          import('@/pages/NotFoundPage').then((m) => ({ default: m.NotFoundPage })),
+        ),
       },
     ],
   },
-
-  // Catch-all
-  { path: '*', element: withSuspense(lazy(() => import('@/pages/NotFoundPage').then((m) => ({ default: m.NotFoundPage })))) },
 ]);
 ```
+
+The root route is where router-aware providers live. `AuthProvider` and `SurfaceProvider` call router hooks, so they must be descendants of `RouterProvider`; global app providers such as `QueryClientProvider`, `MotionConfig`, and `BreakpointProvider` stay outside the router tree.
+
+Routes that can render inside a drawer or modal may be wrapped by the `SurfaceRouteFrame` described in [28_surfaces.md](28_surfaces.md). They are still declared here in `src/app/router.tsx`; surface support must not create a second route registry.
 
 ---
 
 ## Lazy loading rules
 
-Every page component is lazy-loaded. No synchronous page imports are permitted.
+Every page component is lazy-loaded. No synchronous page imports are permitted. Use `lazyRoute` from [30_dynamic_loading.md](30_dynamic_loading.md).
 
 ```ts
 // Wrong — synchronous import
 import { InvoicesPage } from '@/pages/invoices/InvoicesPage';
 
 // Correct — lazy import
-const InvoicesPage = lazy(() =>
+element: lazyRoute(() =>
   import('@/pages/invoices/InvoicesPage').then((m) => ({ default: m.InvoicesPage })),
 );
 ```
@@ -218,6 +236,7 @@ export function AppShell() {
 
 - **Never define routes outside of `src/app/router.tsx`.** Dynamic route additions at runtime are not permitted.
 - **Never import page components synchronously.** Every page is lazy-loaded.
+- **Never import feature providers, components, or internals from the router.** The router imports pages only.
 - **Never hardcode path strings.** Use `ROUTES` constants.
 - **Never perform authentication checks inside page components.** Auth gates live in `ProtectedRoute` layout routes.
 - **Never store filter/pagination state in component state** when it should be in URL search params. Search params are the first choice for shareable UI state.

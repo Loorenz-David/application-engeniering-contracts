@@ -85,7 +85,7 @@ export function useCreateInvoiceForm() {
 }
 ```
 
-The `onSubmit` and action call live in the component or controller so they have access to navigation. The form hook's only job is schema + `defaultValues`.
+The `onSubmit` and action call live in the component or controller so they have access to navigation and mutation state. The form hook's only job is schema + `defaultValues`.
 
 ---
 
@@ -104,16 +104,19 @@ type CreateInvoiceFormProps = {
 };
 
 export function CreateInvoiceForm({ onSuccess }: CreateInvoiceFormProps) {
-  const { form, onSubmit, isPending } = useCreateInvoiceForm(onSuccess);
+  const { form } = useCreateInvoiceForm();
+  const { createInvoice, isPending } = useCreateInvoiceContext();
   const { register, formState: { errors } } = form;
+
+  const onSubmit = form.handleSubmit((input) => {
+    createInvoice(input, {
+      onSuccess: (invoice) => onSuccess(invoice.id),
+    });
+  });
 
   return (
     <form onSubmit={onSubmit} noValidate>
-      <Input
-        {...register('client_id')}
-        label="Client"
-        error={errors.client_id?.message}
-      />
+      <input type="hidden" {...register('client_id')} />
       <Input
         {...register('due_date')}
         type="datetime-local"

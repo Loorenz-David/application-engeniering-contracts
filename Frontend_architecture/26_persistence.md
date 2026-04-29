@@ -107,6 +107,7 @@ This is the primary senior technique for perceived performance. The query cache 
 import { QueryClient } from '@tanstack/react-query';
 import { PersistQueryClientProvider } from '@tanstack/react-query-persist-client';
 import { createSyncStoragePersister } from '@tanstack/query-sync-storage-persister';
+import { env } from '@/lib/env';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -122,14 +123,14 @@ const persister = createSyncStoragePersister({
   key:     'app-query-cache',
 });
 
-export function Providers({ children }: { children: React.ReactNode }) {
+export function AppProviders({ children }: { children: React.ReactNode }) {
   return (
     <PersistQueryClientProvider
       client={queryClient}
       persistOptions={{
         persister,
         maxAge:  1000 * 60 * 60 * 24,  // discard cache older than 24 hours
-        buster:  import.meta.env.VITE_APP_VERSION, // invalidate cache on deploy
+        buster:  env.VITE_APP_VERSION, // invalidate cache on deploy
       }}
     >
       {children}
@@ -154,7 +155,7 @@ export default defineConfig({
 
 ### What gets persisted vs excluded
 
-By default, every query in the cache is persisted. Exclude sensitive queries using the `gcTime: 0` override — entries with `gcTime: 0` are never persisted:
+By default, every query in the cache is eligible for persistence. Exclude sensitive queries explicitly with query `meta` and `shouldDehydrateQuery`:
 
 ```ts
 // features/billing/api/use-payment-methods.ts
@@ -163,7 +164,7 @@ export function usePaymentMethodsQuery() {
   return useQuery({
     queryKey: paymentKeys.list(),
     queryFn:  fetchPaymentMethods,
-    gcTime:   0,   // excluded from persisted cache
+    meta:     { persist: false },   // excluded from persisted cache
   });
 }
 ```
@@ -175,6 +176,7 @@ persistOptions={{
   persister,
   dehydrateOptions: {
     shouldDehydrateQuery: (query) => {
+      if (query.meta?.persist === false) return false;
       // Only persist profile and workspace data
       const key = query.queryKey[0];
       return key === 'profile' || key === 'workspace' || key === 'members';
@@ -194,7 +196,7 @@ t=200ms → Background refetches complete, UI updates silently if data changed
 
 Without the persister:
 ```
-t=0ms  → Page renders with loading spinners everywhere
+t=0ms  → Page renders with skeleton reflections everywhere
 t=200ms → Data arrives, UI renders
 ```
 
@@ -299,7 +301,7 @@ export function useSignOutMutation() {
 |---|---|---|
 | `auth-token.ts` | Access token | In-memory variable |
 | Browser | Refresh token | `httpOnly` cookie |
-| `auth.store.ts` | User identity (id, email, name, role, permissions) | Zustand — in-memory only |
+| `auth.store.ts` | User identity (id, email, name, roles, permissions) | Zustand — in-memory only |
 | `preferences.store.ts` | Theme, sidebar state | Zustand + `persist` → localStorage |
 | TanStack Query | Server data (profile, workspace, entities) | In-memory + optional localStorage persister |
 | `features/profile/` | Full user profile | TanStack Query (persisted) |
@@ -311,7 +313,7 @@ export function useSignOutMutation() {
 
 - **Never persist the access token to any storage.** In-memory only — it dies when the tab closes and is restored by the refresh cookie.
 - **Never persist the Zustand auth store.** If the auth store is persisted, a user who signs out on a shared machine leaves their identity in localStorage for the next user.
-- **Never persist TanStack Query data with `gcTime: 0` queries.** Mark sensitive queries with `gcTime: 0` so they are excluded from the persisted cache.
+- **Never persist sensitive TanStack Query data.** Mark sensitive queries with `meta: { persist: false }` and enforce that in `shouldDehydrateQuery`.
 - **Never skip the cache buster on the TanStack Query persister.** Without it, a backend schema change can hydrate stale data that crashes the app on boot.
 - **Never use localStorage for tokens of any kind.** Any XSS script can read it and exfiltrate it to an attacker's server — unlike in-memory variables, which are only readable during the current session.
 - **Never forget to clear persisted cache on sign-out.** `queryClient.clear()` clears the in-memory cache; `localStorage.removeItem('app-query-cache')` clears the persisted copy.

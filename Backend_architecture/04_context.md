@@ -9,6 +9,8 @@
 
 That is its full scope. It is not a configuration object.
 
+For complex write operations that need to track touched entities, pending events, or cascading response data, use a command-local `WorkContext` instead. See [39_work_context.md](39_work_context.md).
+
 ---
 
 ## Canonical definition
@@ -107,6 +109,8 @@ See [24_multi_tenancy.md](24_multi_tenancy.md) for the workspace architecture an
 | `inject_workspace_id: bool` | ORM mutation policy as a flag | Commands assign `workspace_id=ctx.workspace_id` explicitly — no injection helpers |
 | `allow_is_system_modification: bool` | Privilege escalation as a flag | System-level modification is a separate command with its own authorization path |
 | `relationship_map: dict` | ORM linkage as runtime config | Relationship resolution is explicit inside each command |
+| `touched_entities: dict` | Operation-local mutation tracking | Use `WorkContext` inside complex commands |
+| `pending_events: list` | Command side-effect tracking | Use `WorkContext.events`, then emit after commit |
 | `ai_operation: str` | AI-specific scope leaking into the general context | AI tool invocations carry their own typed input, not a flag on ServiceContext |
 | `current_workspace: str` | Workspace-switching state as context | The JWT *is* the workspace session — switch by issuing a new token |
 

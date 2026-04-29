@@ -4,28 +4,34 @@
 
 Performance is built in by default, not added later. This contract defines the rules for code splitting, memoization, and bundle discipline that apply to every frontend application.
 
+Dynamic loading boundaries are defined in [30_dynamic_loading.md](30_dynamic_loading.md). This contract explains when performance work is justified and how it is measured.
+
+Animation performance rules are defined in [31_animations.md](31_animations.md). Prefer opacity and transform, and avoid layout-heavy animation unless the interaction is small and bounded.
+
 ---
 
 ## Code splitting
 
 ### Route-level splitting
 
-Every page component is lazy-loaded (see `11_routing.md`). This is the most impactful form of code splitting and is non-negotiable.
+Every page component is lazy-loaded (see [11_routing.md](11_routing.md) and [30_dynamic_loading.md](30_dynamic_loading.md)). This is the most impactful form of code splitting and is non-negotiable.
 
 ```ts
 // Every page — mandatory
-const InvoicesPage = lazy(() =>
+element: lazyRoute(() =>
   import('@/pages/invoices/InvoicesPage').then((m) => ({ default: m.InvoicesPage })),
 );
 ```
 
-### Heavy library splitting
+### Heavy library adapters
 
-Large libraries used by only one feature are imported dynamically:
+Large libraries used by only one feature are imported through dynamic adapters:
 
 ```ts
-// A rich text editor used only in one component
-const { default: RichTextEditor } = await import('@/lib/rich-text-editor');
+// src/lib/dynamic-libs/pdf.ts
+export async function loadPdfLib() {
+  return import('pdf-lib');
+}
 ```
 
 Do not dynamically import modules that are used on every page (React, TanStack Query, Zustand) — the chunking overhead exceeds the benefit.

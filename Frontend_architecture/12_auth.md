@@ -32,12 +32,13 @@ The store holds the current user's identity. It does **not** hold the access tok
 // src/store/auth.store.ts
 import { create } from 'zustand';
 import type { UserId, WorkspaceId } from '@/types/common';
+import type { Role } from '@/types/roles';
 
 type User = {
-  id:    UserId;
-  email: string;
-  name:  string;
-  role:  'admin' | 'member' | 'viewer';
+  id:          UserId;
+  email:       string;
+  name:        string;
+  roles:       Role[];
   permissions: string[];
 };
 
@@ -76,6 +77,8 @@ On mount, `AuthProvider` calls `initSession()` (defined in `04_api_client.md`). 
 
 `AuthProvider` also listens for the `auth:session-expired` custom event dispatched by the API client when a mid-session refresh fails.
 
+`AuthProvider` calls `useNavigate()`, so it must be rendered inside the router tree. Mount it from the root route layout described in [11_routing.md](11_routing.md), not above `RouterProvider`.
+
 ```tsx
 // features/auth/components/AuthProvider.tsx
 import { useEffect, useState } from 'react';
@@ -89,7 +92,8 @@ import { ROUTES } from '@/lib/routes';
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [ready, setReady] = useState(false);
-  const { setUser, clearAuth } = useAuthStore();
+  const setUser      = useAuthStore((s) => s.setUser);
+  const clearAuth    = useAuthStore((s) => s.clearAuth);
   const queryClient  = useQueryClient();
   const navigate     = useNavigate();
 
@@ -107,7 +111,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
               id:          profile.id,
               email:       profile.email,
               name:        profile.name,
-              role:        profile.role,
+              roles:       profile.roles,
               permissions: profile.permissions,
             },
             profile.workspace_id,
@@ -130,7 +134,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return () => window.removeEventListener('auth:session-expired', handleExpired);
   }, [clearAuth, queryClient, navigate]);
 
-  if (!ready) return <FullPageSpinner />;
+  if (!ready) return <AppBootSkeleton />;
 
   return <>{children}</>;
 }
@@ -144,19 +148,25 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
 `useAuth` exposes auth identity and auth actions. It does not expose avatar, timezone, or preferences — for those, use `useCurrentUser()` from [25_user_profile.md](25_user_profile.md).
 
-Nothing reads `useAuthStore` directly except `useAuth` and `AuthProvider`.
+Nothing outside the auth lifecycle reads `useAuthStore` directly. `useAuth`, `AuthProvider`, and sign-in/sign-out callbacks may touch it; all other code uses the public `useAuth()` hook or `usePermissions()`.
 
 ```ts
 // features/auth/hooks/use-auth.ts
-import { useAuthStore, selectUser, selectIsAuthenticated } from '@/store/auth.store';
+import {
+  useAuthStore,
+  selectUser,
+  selectWorkspaceId,
+  selectIsAuthenticated,
+} from '@/store/auth.store';
 import { useSignOutMutation } from '@/features/auth/api/use-sign-out';
 
 export function useAuth() {
   const user            = useAuthStore(selectUser);
+  const workspaceId     = useAuthStore(selectWorkspaceId);
   const isAuthenticated = useAuthStore(selectIsAuthenticated);
   const { mutate: signOut, isPending: isSigningOut } = useSignOutMutation();
 
-  return { user, isAuthenticated, signOut, isSigningOut };
+  return { user, workspaceId, isAuthenticated, signOut, isSigningOut };
 }
 ```
 
@@ -178,7 +188,7 @@ const SignInResponseSchema = z.object({
     id:          z.string().uuid(),
     email:       z.string().email(),
     name:        z.string(),
-    role:        z.enum(['admin', 'member', 'viewer']),
+    roles:       z.array(z.string().min(1)),
     permissions: z.array(z.string()),
   }),
   workspace_id: z.string().uuid(),
@@ -295,7 +305,7 @@ const OAuthCallbackResponseSchema = z.object({
     id:          z.string().uuid(),
     email:       z.string().email(),
     name:        z.string(),
-    role:        z.enum(['admin', 'member', 'viewer']),
+    roles:       z.array(z.string().min(1)),
     permissions: z.array(z.string()),
   }),
   workspace_id: z.string().uuid(),
@@ -329,7 +339,7 @@ export function OAuthCallback() {
       .catch(() => navigate(ROUTES.signIn, { replace: true }));
   }, []);
 
-  return <FullPageSpinner />;
+  return <AppBootSkeleton />;
 }
 ```
 
@@ -372,7 +382,7 @@ export function GuestRoute() {
 - **Never call the refresh endpoint from anywhere except `auth-token.ts`.** The singleton there prevents concurrent refresh races.
 - **Never listen for `auth:session-expired` in more than one place.** Only `AuthProvider` handles it.
 - **Never skip `queryClient.clear()` on sign-out.** Cached server data is user-specific.
-- **Never expose `useAuthStore` outside of `useAuth` and `AuthProvider`.** All other code uses the public `useAuth` hook.
+- **Never expose `useAuthStore` outside the auth lifecycle.** All non-auth code uses `useAuth()` or `usePermissions()`.
 - **Never implement authorization decisions on the frontend.** The backend enforces permissions; the frontend only shows or hides UI.
 - **Never handle the OAuth callback code more than once.** React StrictMode mounts twice in development — guard with a `useRef` flag to prevent double exchange requests.
 - **Never store the OAuth `code` or `state` parameters after exchange.** They are single-use; clear the URL immediately via `navigate(..., { replace: true })`.

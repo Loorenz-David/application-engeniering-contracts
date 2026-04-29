@@ -20,25 +20,16 @@ Use when: two concurrent writers would both try to modify the same row and the l
 
 ```python
 # services/commands/<domain>/increment_record_counter.py
+from my_app.services.identity.records import resolve_record
+
 
 def increment_record_counter(ctx: ServiceContext) -> dict:
     request = parse_increment_request(ctx.incoming_data)
 
     with db.session.begin():
-        # Lock the row before reading — no other transaction can update it until this one commits
-        record = (
-            db.session.query(Record)
-            .filter(
-                Record.id == request.record_id,
-                Record.workspace_id == ctx.workspace_id,
-                Record.is_deleted == False,
-            )
-            .with_for_update()   # acquires a row-level lock
-            .first()
-        )
-        if record is None:
-            raise NotFound(f"Record {request.record_id} not found.")
-
+        # resolve_record with for_update=True acquires a row-level lock.
+        # workspace enforcement and soft-delete filtering are handled by the resolver — see 38_identity_resolution.md
+        record = resolve_record(ctx, request.ref, for_update=True)
         record.counter += 1
 
     return {"counter": record.counter}
@@ -97,8 +88,9 @@ def update_record(ctx: ServiceContext) -> dict:
         rows_updated = (
             db.session.query(Record)
             .filter(
-                Record.id == request.record_id,
+                Record.client_id == request.client_id,  # public identifier from the request
                 Record.workspace_id == ctx.workspace_id,
+                Record.is_deleted == False,
                 Record.version == request.version,   # must match what the client read
             )
             .update(
@@ -206,6 +198,8 @@ def create_record(ctx: ServiceContext) -> dict:
 ```
 
 **Idempotency key TTL:** Idempotency keys can be pruned after 24 hours. A retry arriving 24 hours late is a programming error, not a normal retry.
+
+For batch commands, resolve and lock all target entities before applying modifications. Use the batch identity resolver with `for_update=True` when concurrent writes can conflict, and use `WorkContext` to track all touched entities and events. See [38_identity_resolution.md](38_identity_resolution.md) and [39_work_context.md](39_work_context.md).
 
 ---
 

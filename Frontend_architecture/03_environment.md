@@ -45,7 +45,9 @@ const EnvSchema = z.object({
   VITE_API_URL: z.string().url(),
   VITE_WS_URL: z.string().url().optional(),
   VITE_APP_ENV: z.enum(['development', 'staging', 'production']).default('development'),
+  VITE_APP_VERSION: z.string().min(1).default('dev'),
   VITE_SENTRY_DSN: z.string().url().optional(),
+  VITE_ANALYTICS_ENABLED: z.enum(['true', 'false']).default('false').transform((v) => v === 'true'),
 });
 
 const parsed = EnvSchema.safeParse(import.meta.env);
@@ -60,6 +62,8 @@ export const env = parsed.data;
 ```
 
 This file is imported once in `src/app/App.tsx` or `src/main.tsx` before any other module. The rest of the app imports `env` from `@/lib/env` — never reads `import.meta.env` directly.
+
+`import.meta.env` values are raw strings. `env` is the parsed application config. Transform boolean and numeric values in `EnvSchema` so application code consumes the correct type.
 
 ```ts
 // Correct — typed, validated
@@ -84,7 +88,9 @@ interface ImportMetaEnv {
   readonly VITE_API_URL: string;
   readonly VITE_WS_URL?: string;
   readonly VITE_APP_ENV: 'development' | 'staging' | 'production';
+  readonly VITE_APP_VERSION?: string;
   readonly VITE_SENTRY_DSN?: string;
+  readonly VITE_ANALYTICS_ENABLED?: 'true' | 'false';
 }
 
 interface ImportMeta {
@@ -140,8 +146,8 @@ if (env.VITE_APP_ENV === 'production') {
   enableAnalytics();
 }
 
-// Correct — branches on an explicit feature flag
-if (env.VITE_ANALYTICS_ENABLED === 'true') {
+// Correct — parsed config value, boolean after EnvSchema transform
+if (env.VITE_ANALYTICS_ENABLED) {
   enableAnalytics();
 }
 ```
@@ -155,5 +161,6 @@ Environment names leak deployment topology into application logic. Feature flags
 - **Never read `import.meta.env` outside of `src/lib/env.ts`.** All other files import `env` from `@/lib/env`.
 - **Never put secrets in any `VITE_`-prefixed variable.** They will be visible in the browser bundle.
 - **Never default a missing required variable to a fallback string.** A missing `VITE_API_URL` should throw, not silently use `localhost`.
+- **Never consume raw string feature flags in app code.** Transform them in `EnvSchema` and read the parsed `env` value.
 - **Never commit `.env.local`.** It is in `.gitignore` for a reason — it contains local developer overrides.
 - **Never branch on `process.env.NODE_ENV` directly.** Use `env.VITE_APP_ENV` which is validated and typed.

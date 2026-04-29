@@ -4,6 +4,8 @@
 
 The API client is the single module responsible for all HTTP communication with the backend. It owns JWT token storage, attaches Bearer headers, handles 401 → token-refresh → retry, validates responses with Zod, and normalises errors into typed `ApiRequestError` objects. Nothing above it speaks raw HTTP; nothing in it speaks domain logic.
 
+Entity identifiers passed through the API client are public client-facing IDs only. The frontend never sends, receives, stores, logs, or branches on backend database primary keys. For first-party creates, that public ID originates as `client_id` in the request DTO; after the response is parsed, feature code treats it as the entity's normal branded ID.
+
 Two files form this layer:
 
 ```
@@ -194,7 +196,7 @@ async function request<T>(
   }
 
   // ── 2xx: validate response with Zod ──────────────────────────────────────────
-  const json: unknown = await response.json();
+  const json: unknown = response.status === 204 ? {} : await response.json();
   const parsed = schema.safeParse(json);
 
   if (!parsed.success) {
@@ -282,7 +284,7 @@ useEffect(() => {
 }, []);
 ```
 
-This keeps `auth-token.ts` dependency-free — it imports nothing from the app.
+This keeps `auth-token.ts` independent from feature, store, and component state. It may import low-level utilities such as `env`, but it never imports application state.
 
 ---
 
@@ -304,7 +306,7 @@ useEffect(() => {
     .finally(() => setReady(true));
 }, []);
 
-if (!ready) return <FullPageSpinner />;
+if (!ready) return <AppBootSkeleton />;
 ```
 
 The app does not render until `initSession()` resolves. This prevents a flash of the sign-in page for users with a valid refresh cookie.
@@ -338,7 +340,8 @@ import { InvoiceSchema, type CreateInvoiceInput } from '@/features/invoices/type
 const CreateInvoiceResponseSchema = z.object({ invoice: InvoiceSchema });
 
 export async function createInvoice(input: CreateInvoiceInput) {
-  return apiClient.post('/api/v1/invoices', CreateInvoiceResponseSchema, input);
+  const { invoice } = await apiClient.post('/api/v1/invoices', CreateInvoiceResponseSchema, input);
+  return invoice;
 }
 ```
 
@@ -346,13 +349,22 @@ export async function createInvoice(input: CreateInvoiceInput) {
 
 ## Response envelope
 
-The backend wraps all responses in a typed envelope. The query function's schema includes the envelope — the client never strips it:
+The backend wraps all responses in a typed envelope. The query or mutation function's schema includes the envelope at the HTTP boundary:
 
 ```ts
 z.object({ invoice: InvoiceSchema })         // single entity
 PaginatedResponseSchema(InvoiceSchema)        // list
 z.object({})                                  // empty success (DELETE)
 ```
+
+The low-level `apiClient` returns the parsed envelope exactly as the schema describes. Feature API functions may unwrap the useful payload before returning it to TanStack Query:
+
+```ts
+const { invoice } = await apiClient.get(`/api/v1/invoices/${id}`, GetInvoiceResponse);
+return invoice;
+```
+
+This keeps envelope validation centralized while letting query hooks cache the domain DTO directly.
 
 ---
 
@@ -380,7 +392,9 @@ Callers branch on `error.code`, not `error.status`.
 - **Never store the refresh token in JavaScript.** It lives in the `httpOnly` cookie — the browser manages it.
 - **Never fire more than one concurrent refresh request.** The singleton in `auth-token.ts` enforces this.
 - **Never retry a failed request more than once** per 401. The `isRetry` flag enforces this.
-- **Never import from `features/`, `store/`, or `components/` inside `auth-token.ts`.** Token storage must be dependency-free. Signal session expiry through a DOM event.
+- **Never refresh on 403.** A 403 means the session is valid but the user lacks permission. Surface the typed `forbidden` error to the caller.
+- **Never import from `features/`, `store/`, or `components/` inside `auth-token.ts`.** Token storage must be independent from app state. Signal session expiry through a DOM event.
 - **Never return raw JSON.** Every response is parsed with a Zod schema before returning.
 - **Never throw plain `Error` objects.** Always throw `ApiRequestError` with `status` and `code`.
 - **Never cache responses.** Caching is TanStack Query's responsibility.
+- **Never expose backend database IDs.** API paths, params, DTOs, logs, query keys, and events use the public client-facing ID only.

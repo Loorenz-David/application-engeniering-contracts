@@ -88,7 +88,21 @@ from my_app.socketio_instance import socketio
 
 
 def push_workspace_refresh(workspace_id: int, event_name: str, data: dict) -> None:
+    """Single-entity push — one entity changed, one client_id in the payload."""
     socketio.emit(event_name, data, room=f"workspace_{workspace_id}", namespace="/")
+
+
+def push_workspace_batch_event(workspace_id: int, event_name: str, client_ids: list[str]) -> None:
+    """Batch push — multiple entities changed in one operation.
+    The frontend receives one event with the full list of client_ids and handles
+    per-ID cache invalidation via batchInvalidation()."""
+    socketio.emit(event_name, {"ids": client_ids}, room=f"workspace_{workspace_id}", namespace="/")
+
+
+def push_workspace_broadcast_signal(workspace_id: int, event_name: str) -> None:
+    """Broad signal — operation touched too many entities to enumerate.
+    The frontend invalidates the whole entity cache for the workspace."""
+    socketio.emit(event_name, {"workspace_id": workspace_id}, room=f"workspace_{workspace_id}", namespace="/")
 
 
 def push_user_refresh(user_id: int, event_name: str, data: dict) -> None:
@@ -98,8 +112,22 @@ def push_user_refresh(user_id: int, event_name: str, data: dict) -> None:
 **Rules:**
 - Commands must not import `socketio` directly. Real-time pushes go through event handlers.
 - All pushes use named rooms, never broadcast to all clients.
-- Event names follow `<domain>.<action>` convention: `"record.updated"`, `"resource.published"`.
+- Event names follow `<domain>:<action>` convention: `"record:updated"`, `"resource:published"`.
+  This matches the frontend's `ServerToClientEvents` type exactly — the colon is intentional and must be consistent across backend and frontend.
 - Payload must be a plain dict — never an ORM instance.
+- Use `client_id` values (not internal DB `id`) in all payloads — matches what the frontend uses as query keys and route params.
+
+---
+
+## Single vs batch vs broadcast — when to use each
+
+| Scenario | Push function | Event name pattern | Payload |
+|---|---|---|---|
+| One entity changed (create, update, delete) | `push_workspace_refresh` | `record:updated` | `{"id": client_id, ...}` |
+| Bulk command changed 2–200 entities | `push_workspace_batch_event` | `record:batch-updated` | `{"ids": [client_id, ...]}` |
+| Job touched 200+ entities (nightly reconcile, mass import) | `push_workspace_broadcast_signal` | `record:invalidate-all` | `{"workspace_id": ...}` |
+
+Never push 50 individual `record:updated` events for a bulk operation. Emit one `record:batch-updated` event with all 50 `client_id`s. The frontend's `batchInvalidation()` handles per-ID cache decisions without triggering 50 network requests.
 
 ---
 

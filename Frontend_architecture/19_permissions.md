@@ -2,102 +2,155 @@
 
 ## Definition
 
-Client-side permissions are a UX mechanism. They hide inaccessible UI from users who lack the required role. They are **not** a security boundary — the backend enforces authorization on every request. A hidden button does not prevent the underlying API call.
+Client-side permissions are a UX mechanism. They hide inaccessible UI from users who lack the required capability. They are **not** a security boundary — the backend enforces authorization on every request. A hidden button does not prevent the underlying API call.
 
-The permission system follows the same registry pattern as surfaces and socket events: **features declare which roles can perform each of their actions. The app assembles all declarations into a single registry. Hooks and components read from that registry.**
+The frontend does **not** decide which roles are allowed to perform an operation. The backend owns roles, tiers, custom roles, subscription constraints, and per-user overrides. The frontend receives the user's **effective permissions** from the auth/session response and uses them only to shape the interface.
 
 ```
-features/<f>/permissions.ts     ← feature declares its permission keys and allowed roles
+Backend role + permission model
+        ↓
+Session / current-user response
+        ↓
+Auth store holds roles + effective permissions
+        ↓
+usePermissions() reads effective permissions
+        ↓
+Controller maps permission keys to can.*
+        ↓
+Feature components render from context
+```
+
+Features define the permission keys they need. They do not define role rules.
+
+```
+features/<f>/permissions.ts     ← feature declares its permission keys only
         ↓  assembled by
-src/app/permission-registry.ts  ← single source of truth for the entire app
-        ↓  read by
-usePermissions()                ← returns can() function — stable, derived from role
+src/app/permission-registry.ts  ← app-level list of all valid frontend permission keys
+        ↓  typed by
+PermissionKey                   ← derived union of all registered keys
+        ↓  checked by
+usePermissions()                ← checks the auth store's effective permissions
         ↓  consumed by
-Controller → context            ← feature components read can.* from context, never from hooks directly
+Controller → context            ← feature components read can.* from context
 ```
 
 ---
 
-## Role type
+## Roles vs permissions
 
-Roles are defined once and mirror the backend's role model. Add roles here when the backend adds them.
+Roles answer "who is this user broadly?" Permissions answer "what can this user do?"
+
+The frontend may display broad identity information such as the user's role or tier, but feature behavior is controlled by permissions. A feature component must never ask whether a user is an `admin`, `manager`, or `viewer`. It asks whether the user can perform a capability:
+
+```ts
+// Correct — feature checks a capability
+can('invoice:approve');
+
+// Wrong — feature hardcodes a business role
+user.roles.includes('manager');
+```
+
+This keeps feature code stable when the backend changes role definitions, adds custom roles, or grants a permission to one workspace but not another.
+
+---
+
+## Auth identity shape
+
+The user's roles and effective permissions come from the auth session. They are set at login/session restoration and updated only when the backend returns a new session/current-user payload.
 
 ```ts
 // src/types/roles.ts
 import { z } from 'zod';
 
-export const RoleSchema = z.enum(['admin', 'manager', 'member', 'viewer']);
+export const RoleSchema = z.string().min(1);
 export type Role = z.infer<typeof RoleSchema>;
 ```
 
-The user's roles come from the auth store — set at login, never re-fetched independently.
-
 ```ts
-// In the auth store — the user carries their roles
+// In the auth store — identity only, not the full profile
 type AuthUser = {
-  id:           UserId;
-  email:        string;
-  name:         string;
-  roles:        Role[];           // always an array — supports multi-role
-  permissions?: string[];         // explicit per-user overrides (optional)
+  id:          UserId;
+  email:       string;
+  name:        string;
+  roles:       Role[];    // display / broad app-shell decisions only
+  permissions: string[];  // effective permission keys from the backend
 };
 ```
 
-Using `roles: Role[]` (plural array) supports users with multiple roles without changing the permission check logic.
+`roles` is an array because users may have multiple roles or role-like grants. `permissions` is the resolved capability list. The frontend does not expand roles into permissions.
+
+---
+
+## Permission key naming
+
+Permission keys use `'{feature}:{action}'`:
+
+| Rule | Example |
+|---|---|
+| Feature segment is singular and lowercase | `invoice:view` |
+| Action segment is operation-focused | `invoice:approve` |
+| Use verbs, not UI labels | `member:invite`, not `member:show_invite_button` |
+| Do not include role names | `report:export`, not `admin:export_report` |
+| Do not include implementation details | `file:upload`, not `s3:presign` |
+
+Frontend permission keys should mirror backend permission names closely enough that a `403` can be traced directly to the protected backend operation.
 
 ---
 
 ## Per-feature permission definitions
 
-Each feature declares its permission keys and the roles that have access. The key naming convention is `'{feature}:{action}'` — singular feature name, lowercase.
+Each feature declares the permission keys it needs as named constants. The object groups keys into a stable, feature-friendly API for controllers.
 
 ```ts
 // features/invoices/permissions.ts
-import type { FeaturePermissions } from '@/lib/permission-types';
+import type { FeaturePermissionMap } from '@/lib/permission-types';
 
 export const invoicePermissions = {
-  'invoice:view':    ['admin', 'manager', 'member', 'viewer'],
-  'invoice:create':  ['admin', 'manager', 'member'],
-  'invoice:edit':    ['admin', 'manager', 'member'],
-  'invoice:delete':  ['admin'],
-  'invoice:approve': ['admin', 'manager'],
-  'invoice:export':  ['admin', 'manager'],
-} satisfies FeaturePermissions;
+  view:    'invoice:view',
+  create:  'invoice:create',
+  edit:    'invoice:edit',
+  delete:  'invoice:delete',
+  approve: 'invoice:approve',
+  export:  'invoice:export',
+} as const satisfies FeaturePermissionMap;
 ```
 
 ```ts
 // features/settings/permissions.ts
-import type { FeaturePermissions } from '@/lib/permission-types';
+import type { FeaturePermissionMap } from '@/lib/permission-types';
 
 export const settingsPermissions = {
-  'settings:view':   ['admin', 'manager'],
-  'settings:manage': ['admin'],
-  'settings:billing': ['admin'],
-} satisfies FeaturePermissions;
+  view:    'settings:view',
+  manage:  'settings:manage',
+  billing: 'settings:billing',
+} as const satisfies FeaturePermissionMap;
 ```
 
-`satisfies FeaturePermissions` validates the shape without widening the type — the literal key names are preserved so `PermissionKey` is correctly derived at the app level.
+The values are the permission keys. The property names are local aliases used by the feature. A feature may rename a local alias without changing the backend permission key.
 
 ---
 
 ## App-level registry
+
+The registry assembles all feature permission objects so TypeScript can derive the complete frontend permission union. It does **not** contain role mappings.
 
 ```ts
 // src/app/permission-registry.ts
 import { invoicePermissions }  from '@/features/invoices/permissions';
 import { settingsPermissions } from '@/features/settings/permissions';
 import { clientPermissions }   from '@/features/clients/permissions';
-import type { FeaturePermissions } from '@/lib/permission-types';
 
 export const permissionRegistry = {
-  ...invoicePermissions,
-  ...settingsPermissions,
-  ...clientPermissions,
-} as const satisfies FeaturePermissions;
+  invoice:  invoicePermissions,
+  settings: settingsPermissions,
+  client:   clientPermissions,
+} as const;
 
-// PermissionKey is derived automatically from the registry.
-// Adding a new key to any feature file extends this type — no manual update needed.
-export type PermissionKey = keyof typeof permissionRegistry;
+type PermissionRegistry = typeof permissionRegistry;
+export type PermissionKey = {
+  [Feature in keyof PermissionRegistry]:
+    PermissionRegistry[Feature][keyof PermissionRegistry[Feature]];
+}[keyof PermissionRegistry];
 ```
 
 No feature imports another feature's permissions. The registry is the only join point.
@@ -108,17 +161,16 @@ No feature imports another feature's permissions. The registry is the only join 
 
 ```ts
 // src/lib/permission-types.ts
-import type { Role } from '@/types/roles';
-
 // Shape every feature permission file must satisfy
-export type FeaturePermissions = Record<string, Role[]>;
+export type FeaturePermissionMap = Record<string, string>;
 
-// Context passed to can() — derives from auth store
+// Context passed to can() — derived from auth store
 export type PermissionContext = {
-  roles:        Role[];
-  permissions?: string[];  // explicit per-user overrides
+  permissions: readonly string[];
 };
 ```
+
+`permissions` is typed as `string[]` at the auth boundary because the backend may return a key the current frontend does not know yet during rolling deployments. `can()` accepts only known `PermissionKey` values inside application code.
 
 ---
 
@@ -128,31 +180,27 @@ Returns a stable `can()` function. Call once per controller or component, check 
 
 ```ts
 // src/hooks/use-permissions.ts
-import { useCallback }         from 'react';
-import { useAuthStore }        from '@/store/auth.store';
-import { permissionRegistry }  from '@/app/permission-registry';
-import type { PermissionKey }  from '@/app/permission-registry';
+import { useCallback, useMemo } from 'react';
+import { useAuthStore }         from '@/store/auth.store';
+import type { PermissionKey }   from '@/app/permission-registry';
 
 export function usePermissions() {
-  const roles       = useAuthStore((s) => s.user?.roles       ?? []);
-  const overrides   = useAuthStore((s) => s.user?.permissions ?? []);
+  const permissions = useAuthStore((s) => s.user?.permissions ?? []);
+
+  const permissionSet = useMemo(
+    () => new Set<string>(permissions),
+    [permissions],
+  );
 
   const can = useCallback((key: PermissionKey): boolean => {
-    // Explicit per-user overrides take precedence over the role matrix
-    if (overrides.includes(key)) return true;
-
-    const allowedRoles = permissionRegistry[key];
-    if (!allowedRoles) return false;
-
-    // True if any of the user's roles is in the allowed list
-    return roles.some((role) => allowedRoles.includes(role));
-  }, [roles, overrides]);
+    return permissionSet.has(key);
+  }, [permissionSet]);
 
   return { can };
 }
 ```
 
-`can` is memoized with `useCallback` and only re-creates when `roles` or `overrides` changes — typically once per session. Calling it for 10 permissions in a controller is zero overhead.
+The hook performs membership checks against the backend-provided effective permission set. It does not read `roles`, and it does not apply fallback role logic.
 
 ---
 
@@ -180,9 +228,10 @@ Feature components consume context only — they never import permission hooks d
 ```ts
 // features/invoices/controllers/use-invoice-list.controller.ts
 import { usePermissions } from '@/hooks/use-permissions';
+import { invoicePermissions } from '../permissions';
 
 export function useInvoiceListController() {
-  const { can }     = usePermissions();
+  const { can } = usePermissions();
   const invoicesQuery = useInvoicesQuery();
 
   return {
@@ -191,10 +240,10 @@ export function useInvoiceListController() {
 
     // Permission surface — all checks computed once, exposed as plain booleans
     can: {
-      create:  can('invoice:create'),
-      delete:  can('invoice:delete'),
-      approve: can('invoice:approve'),
-      export:  can('invoice:export'),
+      create:  can(invoicePermissions.create),
+      delete:  can(invoicePermissions.delete),
+      approve: can(invoicePermissions.approve),
+      export:  can(invoicePermissions.export),
     },
   };
 }
@@ -216,17 +265,30 @@ export function InvoiceListView() {
 }
 ```
 
-`InvoiceTable` (shared primitive) receives `canDelete` as a prop — it never imports a permission hook. The feature component is the decision point; the primitive only renders what it receives.
+`InvoiceTable` receives `canDelete` as a prop — it never imports a permission hook. The feature component is the decision point; the primitive only renders what it receives.
+
+---
+
+## App-shell role usage
+
+Roles may be used for broad app-shell choices that are not operation authorization:
+
+- choosing the default landing route
+- selecting a navigation preset
+- displaying the user's workspace role label
+- separating major app surfaces such as admin console vs client portal
+
+Even then, prefer backend-provided fields such as `available_surfaces` or `default_route` when the app has complex custom roles. Feature operations still use permissions.
 
 ---
 
 ## `<Guard>` — declarative conditional rendering
 
-For cases where the permission check and the conditional render are in the same component and the controller pattern is not applicable (e.g. inside a shared primitive that conditionally renders an action).
+For cases where the permission check and the conditional render are in the same component and the controller pattern is not applicable.
 
 ```tsx
 // src/components/ui/Guard.tsx
-import { usePermission }     from '@/hooks/use-permission';
+import { usePermission }      from '@/hooks/use-permission';
 import type { PermissionKey } from '@/app/permission-registry';
 
 type GuardProps = {
@@ -242,18 +304,16 @@ export function Guard({ permission, fallback = null, children }: GuardProps) {
 ```
 
 ```tsx
-// Usage
 <Guard permission="invoice:delete">
   <DeleteInvoiceButton />
 </Guard>
 
-// With fallback
 <Guard permission="invoice:approve" fallback={<DisabledApproveButton />}>
   <ApproveInvoiceButton />
 </Guard>
 ```
 
-Prefer the controller pattern (expose `can.*` through context) over `<Guard>` in feature components. `<Guard>` is for shared primitives and layout-level conditional rendering where a controller context is not available.
+Prefer the controller pattern over `<Guard>` in feature components. `<Guard>` is for route/layout-level conditional rendering or shared composition where a controller context is not available.
 
 ---
 
@@ -281,21 +341,28 @@ export function RequirePermission({ permission, redirectTo = '/' }: Props) {
 {
   element: <RequirePermission permission="settings:manage" redirectTo={ROUTES.home} />,
   children: [
-    { path: ROUTES.settingsBilling, element: withSuspense(BillingPage) },
+    {
+      path: ROUTES.settingsBilling,
+      element: lazyRoute(() =>
+        import('@/pages/settings/BillingPage').then((m) => ({ default: m.BillingPage })),
+      ),
+    },
   ],
 },
 ```
+
+Route guards are still UX gates. The backend must return `403` for unauthorized requests even if the route was visible.
 
 ---
 
 ## Permission-aware forms
 
-Form fields that are conditionally shown based on role follow the same controller pattern — compute the boolean in the controller, expose it through context, consume it in the component.
+Form fields that are conditionally shown based on capability follow the same controller pattern — compute the boolean in the controller, expose it through context, consume it in the component.
 
 ```tsx
 // Controller exposes whether the budget field is accessible
 can: {
-  setBudget: can('project:set_budget'),
+  setBudget: can(projectPermissions.setBudget),
 }
 
 // Component reads from context
@@ -315,11 +382,13 @@ If a hidden field has a default value that must still be submitted, send it from
 
 ## Adding a new permission
 
-1. Add the key and allowed roles to `features/<f>/permissions.ts`
-2. Import the feature's permissions in `src/app/permission-registry.ts` and spread them
-3. `PermissionKey` updates automatically — TypeScript will error if an old key was renamed
+1. Add the backend permission and enforce it on the protected command/query.
+2. Ensure the auth/session or `/me` response includes the permission when the user is allowed to perform it.
+3. Add the key to `features/<f>/permissions.ts`.
+4. Import the feature's permission object in `src/app/permission-registry.ts`.
+5. Use the permission from the controller and expose a `can.*` boolean through context.
 
-No other files need to change. The hook, the Guard component, and all route guards pick up the new key automatically because they derive from the registry type.
+No frontend permission mapping needs to change. If a role gains or loses a permission, the backend session output changes and the frontend follows automatically.
 
 ---
 
@@ -330,16 +399,18 @@ Every permission check on the frontend is a UX shortcut only.
 - Hiding a "Delete" button does not prevent a manual DELETE request.
 - If the backend returns `403`, surface it as "You don't have permission to do this" — not as a bug.
 - The backend must enforce the same rules independently on every request.
+- The auth store can be tampered with in the browser; never trust it for authorization.
 
 ---
 
 ## What permissions must NOT do
 
 - **Never rely on frontend permission checks as the only gate for sensitive actions.** The backend must always re-check.
-- **Never read `user.role` or `user.roles` directly in a component for a permission decision.** Always go through `usePermissions()` or the controller's `can.*` object.
+- **Never map roles to permissions in frontend code.** The backend sends effective permissions.
+- **Never read `user.role` or `user.roles` directly in a component for a feature authorization decision.** Always go through `usePermissions()` or the controller's `can.*` object.
 - **Never call `usePermission` inside a loop, `Array.map`, or `Array.some`.** It is a hook — it must be called at the top level. Use `usePermissions()` and call `can()` inside the loop instead.
-- **Never hardcode role names in feature components.** Features reference permission keys (`'invoice:delete'`), not roles (`'admin'`). The registry owns the role mapping.
-- **Never define a permission key in `permission-registry.ts` directly.** Keys belong in `features/<f>/permissions.ts` — the registry only assembles them.
-- **Never fetch permissions in a separate API call.** They come with the auth session and live in the auth store.
+- **Never hardcode role names in feature components.** Features reference permission keys (`'invoice:delete'`), not roles (`'admin'`).
+- **Never define permission keys only in `permission-registry.ts`.** Keys belong in `features/<f>/permissions.ts` — the registry only assembles them.
+- **Never fetch permissions in a separate API call.** They come with the auth session/current-user payload and live in the auth store.
 - **Never import another feature's permissions file.** The registry is the only join point.
-- **Never block the 403 error pathway.** A 403 means the frontend permission check was bypassed — the error boundary and `notify.error` handle it.
+- **Never block the 403 error pathway.** A 403 means the frontend permission check was bypassed or stale — the error boundary and `notify.error` handle it.

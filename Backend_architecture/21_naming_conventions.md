@@ -77,13 +77,15 @@ This is the single source of truth for all naming decisions. When in doubt, look
 | Pattern | Example |
 |---|---|
 | Collection | `/api/v1/records/` |
-| Single resource | `/api/v1/records/<int:record_id>` |
-| Sub-resource collection | `/api/v1/records/<int:record_id>/items/` |
-| State transition | `/api/v1/records/<int:record_id>/state/<int:state_id>` |
+| Single resource | `/api/v1/records/<string:record_client_id>` |
+| Sub-resource collection | `/api/v1/records/<string:record_client_id>/items/` |
+| State transition | `/api/v1/records/<string:record_client_id>/state/<string:state_client_id>` |
 | Named action | `/api/v1/records/archive`, `/api/v1/records/import` |
 | Webhook | `/webhooks/<provider>/record-created` |
 
 Use kebab-case for multi-word path segments: `/event-history`, `/state-changes`. Never camelCase in URLs.
+
+Public routes use `client_id` path parameters. Internal integer IDs are allowed only inside trusted service code, jobs, and database joins. See [38_identity_resolution.md](38_identity_resolution.md).
 
 ---
 

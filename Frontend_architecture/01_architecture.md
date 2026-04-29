@@ -61,7 +61,7 @@ The dividing line is between **Providers** and **Controllers**. Everything below
 
 | Layer | May import | Must NOT import |
 |---|---|---|
-| `pages/` | `features/*/index`, `components/`, `store/` | Feature internals, logic layer directly |
+| `pages/` | `features/*/index`, `components/`, route/global layout helpers | Feature internals, logic layer directly, stores except route-level global pass-through |
 | `features/<f>/providers/` | `features/<f>/controllers/`, `features/<f>/flows/`, `types/`, `store/` | `components/`, `api/`, `actions/` directly |
 | `features/<f>/components/` | `components/ui/`, `lib/utils` | **Everything in the logic layer** — no api/, actions/, controllers/, flows/, store/ |
 | `features/<f>/controllers/` | `features/<f>/actions/`, `features/<f>/api/`, `hooks/`, `store/`, `types/` | `components/`, `providers/`, other features' internals |
@@ -105,6 +105,8 @@ src/
 │       │   └── use-<process>.flow.ts
 │       ├── providers/       # Context providers + context hooks
 │       │   └── <Entity><Section>Provider.tsx
+│       ├── surfaces.ts      # Optional: lazy Surface Manager registrations
+│       ├── preload.ts       # Optional: explicit preload functions for lazy surfaces/routes
 │       ├── components/      # Feature UI components — consume context only
 │       │   └── <Component>.tsx
 │       ├── types.ts         # Zod schemas + inferred types
@@ -114,9 +116,16 @@ src/
 │   └── ui/
 │       ├── Button.tsx
 │       └── Input.tsx
+│   └── surfaces/
+│       ├── DrawerSurface.tsx
+│       └── ModalSurface.tsx
 │
 ├── hooks/                   # Shared utility hooks (domain-agnostic)
 │   └── use-debounce.ts
+│
+├── providers/               # App-level cross-cutting providers
+│   ├── BreakpointProvider.tsx
+│   └── SurfaceProvider.tsx
 │
 ├── store/                   # Zustand stores for truly global client state
 │   ├── auth.store.ts
@@ -124,6 +133,8 @@ src/
 │
 ├── lib/
 │   ├── api-client.ts
+│   ├── animation.ts
+│   ├── env.ts
 │   └── utils.ts
 │
 └── types/
@@ -176,6 +187,7 @@ The controller runs once, in the provider. Every component in the tree reads fro
 | Client state | Zustand | 4.x |
 | Forms | React Hook Form + Zod | 7.x + 3.x |
 | Styling | Tailwind CSS + cva | 3.x + latest |
+| Animation | Framer Motion | 11.x |
 | Schema validation | Zod | 3.x |
 | Testing | Vitest + @testing-library/react + MSW | 2.x + 14.x + 2.x |
 | HTTP | Native fetch (wrapped in api-client) | — |
@@ -187,14 +199,14 @@ The controller runs once, in the provider. Every component in the tree reads fro
 ```tsx
 // src/app/App.tsx
 import { RouterProvider } from 'react-router-dom';
-import { Providers } from './providers';
+import { AppProviders } from './providers';
 import { router } from './router';
 
 export function App() {
   return (
-    <Providers>
+    <AppProviders>
       <RouterProvider router={router} />
-    </Providers>
+    </AppProviders>
   );
 }
 ```
@@ -202,8 +214,11 @@ export function App() {
 ```tsx
 // src/app/providers.tsx
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { AuthProvider } from '@/features/auth';
+import { LazyMotion, MotionConfig, domAnimation } from 'framer-motion';
+import { NotificationProvider } from '@/features/notifications';
 import { NotificationRenderer } from '@/features/notifications';
+import { notificationConfig } from '@/lib/notification-config';
+import { BreakpointProvider } from '@/providers/BreakpointProvider';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -212,17 +227,44 @@ const queryClient = new QueryClient({
   },
 });
 
-export function Providers({ children }: { children: React.ReactNode }) {
+export function AppProviders({ children }: { children: React.ReactNode }) {
   return (
-    <QueryClientProvider client={queryClient}>
-      <AuthProvider>
-        {children}
-        <NotificationRenderer />
-      </AuthProvider>
-    </QueryClientProvider>
+    <MotionConfig reducedMotion="user">
+      <LazyMotion features={domAnimation}>
+        <BreakpointProvider>
+          <QueryClientProvider client={queryClient}>
+            <NotificationProvider config={notificationConfig}>
+              {children}
+              <NotificationRenderer />
+            </NotificationProvider>
+          </QueryClientProvider>
+        </BreakpointProvider>
+      </LazyMotion>
+    </MotionConfig>
   );
 }
 ```
+
+Providers that call React Router hooks must live inside the router tree. Put them in a root layout route, not in `AppProviders`:
+
+```tsx
+// src/app/RootRoute.tsx
+import { Outlet } from 'react-router-dom';
+import { AuthProvider } from '@/features/auth';
+import { SurfaceProvider } from '@/providers/SurfaceProvider';
+
+export function RootRoute() {
+  return (
+    <AuthProvider>
+      <SurfaceProvider>
+        <Outlet />
+      </SurfaceProvider>
+    </AuthProvider>
+  );
+}
+```
+
+`AppProviders` owns infrastructure that does not require router context. `RootRoute` owns providers that need `useNavigate()`, `useLocation()`, or route params.
 
 ---
 

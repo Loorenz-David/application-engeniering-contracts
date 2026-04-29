@@ -79,6 +79,8 @@ Agents and engineers **must** read this contract before writing any code. Every 
 |---|---|
 | [35_gdpr_erasure.md](35_gdpr_erasure.md) | Right to erasure — PII inventory, erasure workflow, hard delete vs anonymize, retention holds, storage erasure |
 | [36_audit_log.md](36_audit_log.md) | Tamper-evident audit trail — model, write pattern, event naming, tamper-evidence rules, retention policy |
+| [38_identity_resolution.md](38_identity_resolution.md) | Public `client_id` vs internal `id`, shared entity resolver, workspace/soft-delete-safe lookup |
+| [39_work_context.md](39_work_context.md) | Command-local WorkContext for complex writes, touched entities, cascading changes, response assembly |
 
 ---
 
@@ -96,6 +98,7 @@ Use this table to find the minimum set of contracts you need to read before star
 | **Add an external integration (SMS, email, webhook)** | [19_integrations.md](19_integrations.md) | 16, 11, 18 |
 | **Add a background job** | [16_background_jobs.md](16_background_jobs.md) | 11, 12 |
 | **Add a real-time Socket.IO event** | [13_sockets.md](13_sockets.md) | 11 |
+| **Add a batch real-time event (bulk operations)** | [11_infra_events.md §Batch events](11_infra_events.md) | 13 |
 | **Write or modify a migration** | [30_migrations.md](30_migrations.md) | 03 |
 | **Debug a permission or auth issue** | [10_auth.md](10_auth.md) | 28, 04 |
 | **Debug a multi-tenant data leak** | [24_multi_tenancy.md](24_multi_tenancy.md) | 07, 18 |
@@ -115,6 +118,8 @@ Use this table to find the minimum set of contracts you need to read before star
 | **Add a scheduled / recurring job** | [37_scheduled_jobs.md](37_scheduled_jobs.md) | 16, 27 |
 | **Implement GDPR erasure** | [35_gdpr_erasure.md](35_gdpr_erasure.md) | 25, 34, 36 |
 | **Add an audit trail to a command** | [36_audit_log.md](36_audit_log.md) | 06 |
+| **Resolve an entity by public or internal ID** | [38_identity_resolution.md](38_identity_resolution.md) | 03, 06, 07, 09 |
+| **Track cascading changes in a complex command** | [39_work_context.md](39_work_context.md) | 04, 06, 08, 38 |
 
 Contract numbers refer to the file prefix (e.g., `06` = `06_commands.md`).
 
@@ -141,6 +146,8 @@ See [`AI_Architecture/`](../AI_Architecture/README.md) for the full agent and MC
 7. **`DomainError` and its subclasses are the only errors that cross layer boundaries.** Never let `SQLAlchemyError`, `KeyError`, or `AttributeError` bubble to the router.
 8. **Never alter the database manually.** All schema changes go through Alembic migrations.
 9. **Documentation is updated in the same PR as the code.** A new endpoint without a shape in `docs/domains/<domain>/api.md` is an incomplete PR. An outdated doc is a bug.
+10. **Public APIs identify resources by `client_id`, not internal `id`.** Services use the shared identity resolver to resolve `client_id` or trusted internal `id` with workspace and soft-delete filtering.
+11. **Complex commands track affected entities in a WorkContext.** `ServiceContext` carries request identity/data; `WorkContext` carries operation-local touched entities, events, and warnings.
 
 ---
 

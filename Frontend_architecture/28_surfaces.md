@@ -6,6 +6,8 @@ A **surface** is a visual container that frames a feature page. The surface prov
 
 The **Surface Manager** is the root-level registry and controller for all overlay surfaces. Features register the surfaces they can appear in. Any other feature triggers them by name — no direct imports, no shared props, no coupling between features.
 
+Surface content is lazy-loaded by default. See [30_dynamic_loading.md](30_dynamic_loading.md) for the route, surface, preload, and heavy-library loading rules.
+
 ```
 Feature A:  surface.open('invoice-detail', { id })
             ↓
@@ -51,6 +53,8 @@ Features declare which surfaces they participate in. The app assembles all featu
 
 A create invoice form in a center modal popup is just as worth a URL as the same form in a side drawer. The `path` captures the state; the `surface` type controls only the visual treatment.
 
+Every URI-enabled surface must have a matching route registration for the same path. The surface registry controls presentation; the router controls URL restoration. Without a route, `surface.open()` may work during the current session, but direct URL entry, refresh, browser history, and shared links will fail.
+
 ```ts
 // features/invoices/surfaces.ts
 import { lazy } from 'react';
@@ -60,22 +64,32 @@ export const invoiceSurfaces = {
   'invoice-list': {
     surface:   'page',
     path:      () => '/invoices',
-    component: lazy(() => import('./pages/InvoicesPage')),
+    component: lazy(() =>
+      import('./pages/InvoicesPage').then((m) => ({ default: m.InvoicesPage })),
+    ),
   },
   'invoice-detail': {
     surface:   'drawer',
     path:      (p: { id: string }) => `/invoices/${p.id}`,
-    component: lazy(() => import('./pages/InvoiceDetailPage')),
+    component: lazy(() =>
+      import('./pages/InvoiceDetailPage').then((m) => ({ default: m.InvoiceDetailPage })),
+    ),
   },
   'invoice-create': {
     surface:   'modal',
     path:      () => '/invoices/new',   // ← full feature page — gets a URL
-    component: lazy(() => import('./pages/InvoiceCreatePage')),
+    component: lazy(() =>
+      import('./pages/InvoiceCreatePage').then((m) => ({ default: m.InvoiceCreatePage })),
+    ),
   },
   'invoice-delete-confirm': {
     surface:   'modal',
     // No path — ephemeral confirm dialog, not a navigable state
-    component: lazy(() => import('./pages/InvoiceDeleteConfirmPage')),
+    component: lazy(() =>
+      import('./pages/InvoiceDeleteConfirmPage').then((m) => ({
+        default: m.InvoiceDeleteConfirmPage,
+      })),
+    ),
   },
 } satisfies SurfaceRegistrations;
 ```
@@ -99,6 +113,37 @@ export type SurfaceId = keyof typeof surfaceRegistry;
 
 No feature imports another feature. The registry is the only join point.
 
+### Matching route requirement
+
+For every surface with a `path`, register the same page in the router:
+
+```tsx
+// features/invoices/surfaces.ts
+export const invoiceSurfaces = {
+  'invoice-create': {
+    surface: 'drawer',
+    path:    () => ROUTES.invoiceCreate,
+    component: lazy(() =>
+      import('./pages/InvoiceCreatePage').then((m) => ({ default: m.InvoiceCreatePage })),
+    ),
+  },
+} satisfies SurfaceRegistrations;
+```
+
+```tsx
+// src/app/router.tsx
+{
+  path: ROUTES.invoiceCreate,
+  element: lazyRoute(() =>
+    import('@/pages/invoices/InvoiceCreatePage').then((m) => ({
+      default: m.InvoiceCreatePage,
+    })),
+  ),
+}
+```
+
+The same route must work as a standalone page when opened directly and as a drawer/modal when opened with background-location state.
+
 ---
 
 ## Surface store
@@ -112,7 +157,7 @@ export type SurfaceType = 'page' | 'drawer' | 'modal';
 export type SurfaceRegistration = {
   surface:    SurfaceType;
   path?:      (props: Record<string, unknown>) => string;
-  component:  React.LazyExoticComponent<React.ComponentType<any>>;
+  component:  React.LazyExoticComponent<React.ComponentType>;
 };
 
 export type SurfaceRegistrations = Record<string, SurfaceRegistration>;
@@ -200,6 +245,7 @@ import { useNavigate }  from 'react-router-dom';
 import { surfaceRegistry } from '@/app/surface-registry';
 import { DrawerSurface }   from '@/components/surfaces/DrawerSurface';
 import { ModalSurface }    from '@/components/surfaces/ModalSurface';
+import { SurfaceSkeleton } from '@/components/ui/SurfaceSkeleton';
 
 // --- Surface props context ---
 export const SurfacePropsContext = createContext<Record<string, unknown>>({});
@@ -246,7 +292,7 @@ function SurfaceRenderer() {
             zIndex={50 + index * 10}
           >
             <SurfacePropsContext.Provider value={entry.props}>
-              <Suspense fallback={<SurfaceSpinner />}>
+              <Suspense fallback={<SurfaceSkeleton surface={entry.surface} />}>
                 <Component />
               </Suspense>
             </SurfacePropsContext.Provider>
@@ -255,14 +301,6 @@ function SurfaceRenderer() {
       })}
     </>,
     document.body,
-  );
-}
-
-function SurfaceSpinner() {
-  return (
-    <div className="flex h-32 items-center justify-center">
-      <span className="text-muted-foreground text-sm">Loading…</span>
-    </div>
   );
 }
 
@@ -288,55 +326,57 @@ export function SurfaceProvider({ children }: { children: React.ReactNode }) {
 
 ## Router integration — URI-enabled surfaces
 
-URI-enabled surfaces (those with a `path`) use React Router's background-location pattern. The router renders the background page AND the surface simultaneously — the background stays visible behind the surface.
+URI-enabled surfaces (those with a `path`) are still normal routes. With this contract's `createBrowserRouter` setup, all route objects stay in `src/app/router.tsx`; the surface manager never creates a second route registry.
+
+When `surface.open()` navigates, it passes surface intent in location state:
+
+```ts
+navigate(path, {
+  state: {
+    surface:    registration.surface,
+    background: { pathname: currentLocation.pathname, search: currentLocation.search },
+  },
+});
+```
+
+The root route or app shell may read that state and wrap the matched page in the appropriate shell. The page itself remains the same page module used for direct navigation.
 
 ```tsx
-// src/app/AppRoutes.tsx
-import { useLocation, Routes, Route } from 'react-router-dom';
+// src/app/SurfaceRouteFrame.tsx
+import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { DrawerSurface } from '@/components/surfaces/DrawerSurface';
-import { useSurfaceStore } from '@/providers/SurfaceProvider';
+import { ModalSurface } from '@/components/surfaces/ModalSurface';
 
 type SurfaceLocationState = {
-  surface?:    SurfaceType;
+  surface?: 'drawer' | 'modal';
   background?: { pathname: string; search: string };
 };
 
-export function AppRoutes() {
-  const location              = useLocation();
-  const state                 = (location.state ?? {}) as SurfaceLocationState;
-  const backgroundLocation    = state.background;
-  const activeSurfaceType     = state.surface;
+const SURFACE_SHELLS = {
+  drawer: DrawerSurface,
+  modal:  ModalSurface,
+};
+
+export function SurfaceRouteFrame() {
+  const location = useLocation();
+  const navigate = useNavigate();
+  const state    = (location.state ?? {}) as SurfaceLocationState;
+
+  if (!state.surface || !state.background) {
+    return <Outlet />;  // direct navigation: full page, no surface chrome
+  }
+
+  const Shell = SURFACE_SHELLS[state.surface];
 
   return (
-    <>
-      {/* Background routes — always render the underlying page */}
-      <Routes location={backgroundLocation ? { ...location, ...backgroundLocation } : location}>
-        <Route element={<AuthenticatedLayout />}>
-          <Route path="/invoices"         element={<InvoicesPage />} />
-          <Route path="/invoices/:id"     element={<InvoiceDetailPage />} />
-          <Route path="/settings"         element={<SettingsPage />} />
-          {/* ... all routes */}
-        </Route>
-      </Routes>
-
-      {/* Surface routes — only when there is a background */}
-      {backgroundLocation && activeSurfaceType && (() => {
-        const Shell = SURFACE_SHELLS[activeSurfaceType];
-        const close = useSurfaceStore.getState().closeTop;
-
-        return (
-          <Shell onClose={close} zIndex={50}>
-            <Routes location={location}>
-              <Route path="/invoices/:id" element={<InvoiceDetailPage />} />
-              {/* all routes that can appear in a surface */}
-            </Routes>
-          </Shell>
-        );
-      })()}
-    </>
+    <Shell onClose={() => navigate(-1)} zIndex={50}>
+      <Outlet />
+    </Shell>
   );
 }
 ```
+
+Register `SurfaceRouteFrame` in `src/app/router.tsx` around routes that can render as surfaces. Do not define duplicate `<Routes>` trees outside `router.tsx`.
 
 **Direct navigation to a surface URL** (e.g. `/invoices/123` opened in a new tab) renders the feature as a full page — no background, no surface chrome. The feature page works identically in both contexts.
 
@@ -551,14 +591,16 @@ Wire recording into the store's `open` action during development or when session
 
 ### `DrawerSurface`
 
-Slides from the right on desktop, from the bottom on mobile via `BreakpointProvider`. Animates in/out. Provides `SurfaceHeaderContext`.
+Slides from the right on desktop, from the bottom on mobile via `BreakpointProvider`. Animation follows [31_animations.md](31_animations.md). Provides `SurfaceHeaderContext`.
 
 ```tsx
 // src/components/surfaces/DrawerSurface.tsx
-import { useState, useEffect }     from 'react';
+import { useState }                from 'react';
+import { m }                       from 'framer-motion';
 import { useBreakpoint }           from '@/providers/BreakpointProvider';
 import { SurfaceHeaderContext }    from '@/providers/SurfaceProvider';
-import { cn } from '@/lib/utils';
+import { transitions }             from '@/lib/animation';
+import { cn }                      from '@/lib/utils';
 
 type Props = { onClose: () => void; zIndex: number; children: React.ReactNode };
 
@@ -566,50 +608,45 @@ export function DrawerSurface({ onClose, zIndex, children }: Props) {
   const { isMobile }          = useBreakpoint();
   const [title,   setTitle]   = useState('');
   const [actions, setActions] = useState<React.ReactNode>(null);
-  const [visible, setVisible] = useState(false);
-
-  useEffect(() => { requestAnimationFrame(() => setVisible(true)); }, []);
-
-  const handleClose = () => {
-    setVisible(false);
-    setTimeout(onClose, 300);
-  };
 
   return (
     <SurfaceHeaderContext.Provider value={{ setTitle, setActions }}>
-      <div
-        className={cn(
-          'fixed inset-0 bg-black/40 transition-opacity duration-300',
-          visible ? 'opacity-100' : 'opacity-0',
-        )}
+      <m.button
+        type="button"
+        aria-label="Close drawer"
+        className="fixed inset-0 bg-black/40"
         style={{ zIndex }}
-        onClick={handleClose}
-        aria-hidden="true"
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        exit={{ opacity: 0 }}
+        transition={transitions.base}
+        onClick={onClose}
       />
-      <div
+      <m.aside
         role="dialog"
         aria-modal="true"
         aria-labelledby="surface-drawer-title"
         className={cn(
-          'fixed bg-background shadow-xl flex flex-col transition-transform duration-300',
+          'fixed bg-background shadow-xl flex flex-col',
           isMobile
             ? 'inset-x-0 bottom-0 rounded-t-2xl max-h-[90dvh]'
             : 'right-0 top-0 h-full w-[480px] border-l',
-          visible
-            ? 'translate-x-0 translate-y-0'
-            : isMobile ? 'translate-y-full' : 'translate-x-full',
         )}
         style={{ zIndex: zIndex + 1 }}
+        initial={isMobile ? { y: '100%' } : { x: '100%' }}
+        animate={isMobile ? { y: 0 } : { x: 0 }}
+        exit={isMobile ? { y: '100%' } : { x: '100%' }}
+        transition={transitions.surface}
       >
         <header className="flex items-center justify-between px-6 py-4 border-b flex-shrink-0">
           <h2 id="surface-drawer-title" className="text-lg font-semibold truncate">{title}</h2>
           <div className="flex items-center gap-2">
             {actions}
-            <button onClick={handleClose} aria-label="Close" className="rounded-md p-1 hover:bg-muted">✕</button>
+            <button onClick={onClose} aria-label="Close" className="rounded-md p-1 hover:bg-muted">✕</button>
           </div>
         </header>
         <div className="flex-1 overflow-y-auto">{children}</div>
-      </div>
+      </m.aside>
     </SurfaceHeaderContext.Provider>
   );
 }
@@ -617,51 +654,47 @@ export function DrawerSurface({ onClose, zIndex, children }: Props) {
 
 ### `ModalSurface`
 
-Centered with backdrop blur. Closes on `Escape` and backdrop click. No URL change.
+Centered with backdrop blur. Closes on `Escape` and backdrop click. No URL change. Animation follows [31_animations.md](31_animations.md).
 
 ```tsx
 // src/components/surfaces/ModalSurface.tsx
 import { useState, useEffect }  from 'react';
+import { m }                    from 'framer-motion';
 import { SurfaceHeaderContext } from '@/providers/SurfaceProvider';
-import { cn } from '@/lib/utils';
+import { transitions }          from '@/lib/animation';
 
 type Props = { onClose: () => void; zIndex: number; children: React.ReactNode };
 
 export function ModalSurface({ onClose, zIndex, children }: Props) {
   const [title,   setTitle]   = useState('');
   const [actions, setActions] = useState<React.ReactNode>(null);
-  const [visible, setVisible] = useState(false);
-
-  useEffect(() => { requestAnimationFrame(() => setVisible(true)); }, []);
-
-  const handleClose = () => {
-    setVisible(false);
-    setTimeout(onClose, 200);
-  };
 
   useEffect(() => {
-    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') handleClose(); };
+    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
     document.addEventListener('keydown', handler);
     return () => document.removeEventListener('keydown', handler);
-  }, []);
+  }, [onClose]);
 
   return (
     <SurfaceHeaderContext.Provider value={{ setTitle, setActions }}>
-      <div
-        className={cn(
-          'fixed inset-0 bg-black/50 backdrop-blur-sm transition-opacity duration-200',
-          visible ? 'opacity-100' : 'opacity-0',
-        )}
+      <m.button
+        type="button"
+        aria-label="Close modal"
+        className="fixed inset-0 bg-black/50 backdrop-blur-sm"
         style={{ zIndex }}
-        onClick={handleClose}
-        aria-hidden="true"
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        exit={{ opacity: 0 }}
+        transition={transitions.base}
+        onClick={onClose}
       />
-      <div
-        className={cn(
-          'fixed inset-0 flex items-center justify-center p-4 transition-all duration-200',
-          visible ? 'opacity-100 scale-100' : 'opacity-0 scale-95',
-        )}
+      <m.div
+        className="fixed inset-0 flex items-center justify-center p-4"
         style={{ zIndex: zIndex + 1 }}
+        initial={{ opacity: 0, scale: 0.96, y: 8 }}
+        animate={{ opacity: 1, scale: 1, y: 0 }}
+        exit={{ opacity: 0, scale: 0.98, y: 8 }}
+        transition={transitions.surface}
       >
         <div
           role="dialog"
@@ -674,12 +707,12 @@ export function ModalSurface({ onClose, zIndex, children }: Props) {
             <h2 id="surface-modal-title" className="text-lg font-semibold">{title}</h2>
             <div className="flex items-center gap-2">
               {actions}
-              <button onClick={handleClose} aria-label="Close" className="rounded-md p-1 hover:bg-muted">✕</button>
+              <button onClick={onClose} aria-label="Close" className="rounded-md p-1 hover:bg-muted">✕</button>
             </div>
           </header>
           <div className="flex-1 overflow-y-auto p-6">{children}</div>
         </div>
-      </div>
+      </m.div>
     </SurfaceHeaderContext.Provider>
   );
 }
@@ -712,7 +745,7 @@ surface.closeAll();  // closes everything
 src/
   app/
     surface-registry.ts         ← assembles all feature surface declarations
-    AppRoutes.tsx               ← router integration for URI-enabled surfaces
+    SurfaceRouteFrame.tsx       ← router integration for URI-enabled surfaces
   providers/
     SurfaceProvider.tsx         ← store, renderer, contexts (Props, Header)
   components/
@@ -748,3 +781,4 @@ features/
 - **Never call `surface.open()` or `surface.close()` from an action hook.** Action hooks are data-only. Surface transitions belong in the controller.
 - **Never open a Page-type surface via the surface manager.** Page surfaces are React Router routes — navigate to them with `useNavigate()` directly.
 - **Never decide `path` based on surface type.** A modal can have a URI. A drawer can omit one. The question is always: is this state worth sharing, bookmarking, or restoring? If yes, add `path`. If it's an ephemeral interruption, omit it.
+- **Never register a URI-enabled surface without a matching route.** The surface registry controls presentation, but the router is what makes refresh, direct entry, browser history, and shared links work.

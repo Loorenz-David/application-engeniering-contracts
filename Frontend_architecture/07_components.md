@@ -4,17 +4,20 @@
 
 A component is a pure UI unit: it receives data from context or props, renders markup, and fires callbacks. It contains no business logic, no API calls, no state derivations, and no direct imports from the logic layer. All of that lives in controllers, actions, and flows, surfaced through providers.
 
+Loading states follow [32_loading_skeletons.md](32_loading_skeletons.md). Feature components render skeleton reflections that match the real UI structure instead of generic spinners.
+
 ---
 
 ## Two categories of components
 
 ### Shared UI primitives (`src/components/ui/`)
 
-Generic, application-agnostic building blocks. `Button`, `Input`, `Modal`, `Badge`, `Table`, `Spinner`.
+Generic, application-agnostic building blocks. `Button`, `Input`, `Modal`, `Badge`, `Table`, `Skeleton`.
 
 - Receive all data via props — no context consumption
 - No knowledge of any feature, domain, or business rule
 - Composed by feature components
+- May include progress primitives for unknown-duration operations, but predictable page/card/table loading uses skeleton reflections
 
 ### Feature components (`features/<f>/components/`)
 
@@ -39,7 +42,7 @@ import { EmptyState } from '@/components/ui/EmptyState';
 export function InvoiceTable() {
   const { invoices, isPending, isError } = useInvoiceListContext();
 
-  if (isPending) return <TableSkeleton rows={5} />;
+  if (isPending) return <TableSkeleton rows={5} />;  // shared reflected table skeleton
   if (isError)   return <EmptyState message="Failed to load invoices." />;
   if (invoices.length === 0) return <EmptyState message="No invoices yet." />;
 
@@ -64,6 +67,29 @@ export function InvoiceTable() {
 ```
 
 The component does not know where `invoices` comes from. It does not call `useInvoicesQuery`. It reads from context and renders.
+
+For card grids or domain-specific layouts, prefer a feature skeleton beside the real component:
+
+```tsx
+// features/invoices/components/InvoiceCardSkeleton.tsx
+export function InvoiceCardSkeleton() {
+  return (
+    <article className="rounded-lg border bg-card p-4">
+      <div className="flex items-start justify-between gap-4">
+        <div className="min-w-0 flex-1">
+          <Skeleton className="h-4 w-24" />
+          <Skeleton className="mt-2 h-3 w-40" />
+        </div>
+        <Skeleton className="h-6 w-20 rounded-full" />
+      </div>
+      <div className="mt-4 flex items-end justify-between">
+        <Skeleton className="h-6 w-28" />
+        <Skeleton className="h-3 w-16" />
+      </div>
+    </article>
+  );
+}
+```
 
 ---
 
@@ -245,4 +271,5 @@ Input.displayName = 'Input';
 - **Never use `React.FC`.** Write plain typed function components.
 - **Never define a component inside another component's function body.**
 - **Never compute domain logic inline in JSX.** Move it to the controller's view model.
+- **Never use mismatched loading placeholders.** Loading components must reflect the final component's container, spacing, and major content blocks.
 - **Never build class strings with template literals.** Use `cn()` from `@/lib/utils`.

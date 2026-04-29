@@ -9,7 +9,7 @@ This contract describes the exact sequence for building a new feature from scrat
 ## Build order principle
 
 ```
-Types → API → Actions → Controllers/Flows → Providers → Components → Pages → Routes
+Types → API → Actions → Controllers/Flows → Providers → Components → Pages → Dynamic loading → Routes
 ```
 
 The logic layer is built bottom-up. The UI layer is assembled top-down on top of it.
@@ -89,9 +89,18 @@ Build one action hook per write operation. Each action wraps one `useMutation` a
 export function useCreateInvoice() {
   const mutation = useMutation({
     mutationFn: createInvoice,
-    onSuccess: (data) => {
+    onMutate: async (input) => {
+      // Snapshot + optimistic cache update.
+    },
+    onError: (_err, _input, context) => {
+      // Roll back from the snapshot returned by onMutate.
+    },
+    onSuccess: (invoice) => {
+      // Seed authoritative server response.
+      queryClient.setQueryData(invoiceKeys.detail(invoice.id), invoice);
+    },
+    onSettled: () => {
       queryClient.invalidateQueries({ queryKey: invoiceKeys.lists() });
-      queryClient.setQueryData(invoiceKeys.detail(data.invoice.id), data);
     },
   });
   return { createInvoice: mutation.mutate, isPending: mutation.isPending, error: mutation.error };
@@ -113,8 +122,7 @@ export function useInvoiceListController() {
   const { data, isPending, isError } = useInvoicesQuery(filtersApi.filters);
   const createAction = useCreateInvoice();
   const deleteAction = useDeleteInvoice();
-  const canCreate   = usePermission('invoices:create');
-  const canDelete   = usePermission('invoices:delete');
+  const { can } = usePermissions();
 
   return {
     invoices:      (data?.items ?? []).map(toInvoiceViewModel),
@@ -125,11 +133,14 @@ export function useInvoiceListController() {
     setSearch:     filtersApi.setSearch,
     setPage:       filtersApi.setPage,
     resetFilters:  filtersApi.resetFilters,
-    createInvoice: canCreate ? createAction.createInvoice : null,
-    deleteInvoice: canDelete ? deleteAction.deleteInvoice : null,
+    createInvoice: can(invoicePermissions.create) ? createAction.createInvoice : null,
+    deleteInvoice: can(invoicePermissions.delete) ? deleteAction.deleteInvoice : null,
     isCreating:    createAction.isPending,
     isDeleting:    deleteAction.isPending,
-    canCreate,     canDelete,
+    can: {
+      create: can(invoicePermissions.create),
+      delete: can(invoicePermissions.delete),
+    },
   };
 }
 export type InvoiceListController = ReturnType<typeof useInvoiceListController>;
@@ -228,7 +239,7 @@ export function useCreateInvoiceForm(onSuccess: (id: InvoiceId) => void) {
   const form = useForm<CreateInvoiceInput>({ resolver: zodResolver(CreateInvoiceInputSchema) });
 
   const onSubmit = form.handleSubmit((data) =>
-    createAction.createInvoiceAsync(data, { onSuccess: (r) => onSuccess(r.invoice.id) })
+    createAction.createInvoiceAsync(data, { onSuccess: (invoice) => onSuccess(invoice.id) })
   );
   return { form, onSubmit, isPending: createAction.isPending };
 }
@@ -258,7 +269,42 @@ export function InvoicesPage() {
 
 ---
 
-### Step 11 — Route registration
+### Step 11 — Dynamic loading registration
+
+Register any lazy boundaries the feature owns:
+
+1. Route page loaded through `lazyRoute`
+2. Drawer/modal page registered in `surfaces.ts`
+3. Heavy one-off library loaded through `src/lib/dynamic-libs/*`
+4. Optional preload function in `preload.ts`
+
+**Contract:** [30_dynamic_loading.md](30_dynamic_loading.md)
+
+```ts
+// features/invoices/preload.ts
+export function preloadInvoiceCreateSurface() {
+  return import('./pages/InvoiceCreatePage');
+}
+```
+
+```ts
+// features/invoices/surfaces.ts
+export const invoiceSurfaces = {
+  'invoice-create': {
+    surface: 'drawer',
+    path:    () => '/invoices/new',
+    component: lazy(() =>
+      import('./pages/InvoiceCreatePage').then((m) => ({ default: m.InvoiceCreatePage })),
+    ),
+  },
+} satisfies SurfaceRegistrations;
+```
+
+Do this before route registration so the feature's loading boundaries are explicit.
+
+---
+
+### Step 12 — Route registration
 
 Add the lazy-loaded page to `src/app/router.tsx` and the path constant to `src/lib/routes.ts`.
 
@@ -266,7 +312,7 @@ Add the lazy-loaded page to `src/app/router.tsx` and the path constant to `src/l
 
 ---
 
-### Step 12 — Public API (`index.ts`)
+### Step 13 — Public API (`index.ts`)
 
 Export only what other features and pages need. Everything internal stays private.
 
@@ -274,7 +320,7 @@ Export only what other features and pages need. Everything internal stays privat
 
 ---
 
-### Step 13 — Tests
+### Step 14 — Tests
 
 Test the logic layer (actions, controllers) and the render layer (form components, list components) separately.
 
@@ -295,7 +341,7 @@ Use before marking the feature complete:
 - [ ] `types.ts`: all schemas use `z.infer` — no standalone interfaces
 - [ ] Query key factory covers `all`, `lists()`, `list(params)`, `details()`, `detail(id)`
 - [ ] Every API response parsed through Zod schema
-- [ ] One action hook per write operation — cache invalidated on success
+- [ ] One action hook per write operation — optimistic lifecycle plus authoritative response reconciliation
 - [ ] Controller aggregates all queries + actions + permissions into one typed object
 - [ ] `ReturnType<typeof useXxxController>` exported as a named type
 - [ ] Provider exports: the component + the context consumer hook only
@@ -321,6 +367,7 @@ Use before marking the feature complete:
 | 8 — Components | [07_components.md](07_components.md) | 14, 23 |
 | 9 — Forms | [09_forms.md](09_forms.md) | 02, 08 |
 | 10 — Page | [10_pages.md](10_pages.md) | 13, 23 |
-| 11 — Route | [11_routing.md](11_routing.md) | 18 |
-| 12 — Public API | [15_feature_structure.md](15_feature_structure.md) | — |
-| 13 — Tests | [17_testing.md](17_testing.md) | 08, 23 |
+| 11 — Dynamic loading | [30_dynamic_loading.md](30_dynamic_loading.md) | 11, 18, 28 |
+| 12 — Route | [11_routing.md](11_routing.md) | 18 |
+| 13 — Public API | [15_feature_structure.md](15_feature_structure.md) | — |
+| 14 — Tests | [17_testing.md](17_testing.md) | 08, 23 |

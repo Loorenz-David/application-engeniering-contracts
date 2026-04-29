@@ -2,7 +2,7 @@
 
 ## Definition
 
-A page component is a thin wrapper that owns its route's Suspense boundary and error boundary, then delegates all rendering to feature components. A page does not contain business logic, API calls, or significant JSX.
+A page component is a thin wrapper that owns its route's data Suspense boundary and post-load error boundary, then delegates all rendering to feature components. Route chunk loading is handled by `lazyRoute` in [30_dynamic_loading.md](30_dynamic_loading.md), which also catches chunk-load failures before the page module exists. Loading fallback structure follows [32_loading_skeletons.md](32_loading_skeletons.md). A page does not contain business logic, API calls, or significant JSX.
 
 ---
 
@@ -28,7 +28,7 @@ export function InvoicesPage() {
 
 The page:
 1. Wraps the content in a `RouteErrorBoundary` — so errors in this route do not crash the app shell
-2. Wraps in `Suspense` — so data loading shows a skeleton instead of nothing
+2. Wraps feature content in `Suspense` — so route data loading shows a reflected skeleton instead of nothing
 3. Renders the feature's primary component — all logic lives there
 
 ---
@@ -84,7 +84,7 @@ export function useInvoicesQuery(params: ListInvoicesParams) {
 
 `useSuspenseQuery` throws a Promise when loading, which Suspense catches. The component that calls `useSuspenseQuery` never needs to handle `isPending` — it only renders when data is ready.
 
-Use `useSuspenseQuery` in feature components that are wrapped in a Suspense boundary. Use `useQuery` in components that need to show an inline skeleton or manage the loading state themselves.
+Use `useSuspenseQuery` in feature components that are wrapped in a Suspense boundary. Use `useQuery` in components that need to show an inline reflected skeleton or manage the loading state themselves.
 
 ---
 
@@ -206,4 +206,5 @@ export class RouteErrorBoundary extends Component<Props, State> {
 - **Never access Zustand stores directly** unless it is to pass a value from global state as a prop to a feature component.
 - **Never skip the error boundary.** Every page must be wrapped in `RouteErrorBoundary`.
 - **Never skip `Suspense`** when using `useSuspenseQuery`. A missing Suspense boundary causes a runtime error.
+- **Never use a generic spinner as the page fallback** when the route structure is known. Use `PageSkeleton` or a feature-specific page skeleton.
 - **Never put more than 30 lines of JSX in a page.** If you exceed this, move logic to the feature.

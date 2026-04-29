@@ -4,6 +4,10 @@
 
 Tailwind CSS is the styling primitive. `class-variance-authority` (cva) is the component variant system. Together they replace CSS files, CSS modules, and CSS-in-JS. The design token system (Tailwind config) is the single source of truth for spacing, color, and typography.
 
+Animation is governed by [31_animations.md](31_animations.md). CSS handles simple color, border, shadow, and focus transitions; Framer Motion handles structural UI transitions such as surfaces, route transitions, list add/remove, and collapse/expand behavior.
+
+Loading shimmer is governed by [32_loading_skeletons.md](32_loading_skeletons.md). Skeleton gradients and keyframes are centralized in global CSS utilities; components only compose skeleton shapes.
+
 ---
 
 ## Rules
@@ -172,6 +176,8 @@ Use Tailwind's responsive prefixes (`sm:`, `md:`, `lg:`) with a mobile-first app
 
 - **Never write `.css` files** for component styles. Global resets and `@font-face` declarations in `src/index.css` are the only exception.
 - **Never use inline `style` props** for anything expressible as a Tailwind class.
+- **Never use CSS transitions for structural UI movement** such as drawers, modals, route transitions, or list reordering. Use the animation contract.
+- **Never define skeleton shimmer gradients or keyframes inside components.** Use the centralized skeleton utility.
 - **Never hardcode hex colors or pixel values** in className strings. Use design tokens.
 - **Never branch on a prop with a ternary to build class strings.** Define the variant in `cva`.
 - **Never import Tailwind utility classes from JavaScript variables.** Tailwind's purge scanner cannot detect dynamic class names — use complete class strings.

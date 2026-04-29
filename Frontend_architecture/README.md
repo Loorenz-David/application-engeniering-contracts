@@ -12,6 +12,7 @@ It is opinionated by design. Every decision has a reason. The reason is stated s
 - Zustand v4
 - React Hook Form v7 + Zod v3
 - Tailwind CSS v3 + class-variance-authority (cva)
+- Framer Motion v11
 - Vitest + @testing-library/react + MSW v2
 
 Engineers and AI assistants **must** read this contract before writing any frontend code.
@@ -47,6 +48,7 @@ Engineers and AI assistants **must** read this contract before writing any front
 | [07_components.md](07_components.md) | Two component categories: shared primitives (props) vs feature components (context only) |
 | [09_forms.md](09_forms.md) | React Hook Form + Zod: schema-first forms, submit pattern, field errors |
 | [10_pages.md](10_pages.md) | Page components: renders provider + Suspense + ErrorBoundary, nothing else |
+| [32_loading_skeletons.md](32_loading_skeletons.md) | Skeleton reflections, centralized shimmer utility, page/surface/card loading states |
 
 ### Cross-Cutting Concerns
 | File | Covers |
@@ -60,7 +62,7 @@ Engineers and AI assistants **must** read this contract before writing any front
 | File | Covers |
 |---|---|
 | [15_feature_structure.md](15_feature_structure.md) | Full folder layout: api/, actions/, controllers/, flows/, providers/, components/ |
-| [16_feature_workflow.md](16_feature_workflow.md) | 13-step build sequence: types → API → actions → controllers → providers → components → pages |
+| [16_feature_workflow.md](16_feature_workflow.md) | 14-step build sequence: types → API → actions → controllers → providers → components → pages → dynamic loading → routes |
 
 ### Quality
 | File | Covers |
@@ -71,7 +73,7 @@ Engineers and AI assistants **must** read this contract before writing any front
 ### Application Features
 | File | Covers |
 |---|---|
-| [19_permissions.md](19_permissions.md) | Client-side RBAC: `usePermission` hook, conditional rendering, security boundary |
+| [19_permissions.md](19_permissions.md) | Client-side permissions: effective backend permissions, `usePermission`, conditional rendering, security boundary |
 | [20_notifications.md](20_notifications.md) | Message system: centralized store, app-level config (duration, max count), global `notify` singleton, sourcing rules, replaceable renderer |
 | [21_realtime.md](21_realtime.md) | Socket.io: centralized event registry, SocketProvider, `refetchType: 'active'` pattern, debouncing, room management |
 | [22_file_handling.md](22_file_handling.md) | File upload/download: validation, progress tracking, backend seam |
@@ -84,6 +86,8 @@ Engineers and AI assistants **must** read this contract before writing any front
 | [27_responsive.md](27_responsive.md) | `BreakpointProvider` (single listener), CSS-first rule, `useBreakpoint()`, shared primitives (Dialog, Drawer) |
 | [28_surfaces.md](28_surfaces.md) | Surface Manager: registry, `useSurface()`, DrawerSurface, ModalSurface, surface stacking, feature decoupling |
 | [29_scrollbars.md](29_scrollbars.md) | CSS-only custom scrollbars: global tokens, webkit + Firefox APIs, utility classes, performance rules |
+| [30_dynamic_loading.md](30_dynamic_loading.md) | Route, surface, feature, and heavy-library lazy loading; preloading rules; fallback taxonomy |
+| [31_animations.md](31_animations.md) | Framer Motion default, CSS vs Motion rules, reduced motion, animation tokens, surface/list transitions |
 
 ---
 
@@ -99,9 +103,11 @@ Engineers and AI assistants **must** read this contract before writing any front
 | **Wire a provider for a UI section** | [23_providers.md](23_providers.md) | 08, 10 |
 | **Build a feature component** | [07_components.md](07_components.md) | 23, 14 |
 | **Build a shared UI primitive** | [07_components.md](07_components.md) | 14 |
+| **Build a skeleton/loading state** | [32_loading_skeletons.md](32_loading_skeletons.md) | 07, 10, 14 |
 | **Fetch and display server data** | [05_server_state.md](05_server_state.md) | 04, 08 |
 | **Build a form with validation** | [09_forms.md](09_forms.md) | 02, 08 |
 | **Add a new page/route** | [10_pages.md](10_pages.md) | 11, 13, 23 |
+| **Lazy-load a route, surface, or heavy library** | [30_dynamic_loading.md](30_dynamic_loading.md) | 11, 18, 28 |
 | **Protect a route** | [11_routing.md](11_routing.md) | 12, 19 |
 | **Add client-side auth** | [12_auth.md](12_auth.md) | 04, 05, 11 |
 | **Display or update the current user's profile** | [25_user_profile.md](25_user_profile.md) | 12, 05, 22 |
@@ -117,11 +123,12 @@ Engineers and AI assistants **must** read this contract before writing any front
 | **Write tests for a feature component** | [17_testing.md](17_testing.md) | 07, 23 |
 | **Optimize rendering performance** | [18_performance.md](18_performance.md) | 07, 08 |
 | **Show toast notifications** | [20_notifications.md](20_notifications.md) | 13 |
-| **Restrict UI by user role** | [19_permissions.md](19_permissions.md) | 12, 08 |
+| **Restrict UI by permission** | [19_permissions.md](19_permissions.md) | 12, 08 |
 | **Add file upload to a form** | [22_file_handling.md](22_file_handling.md) | 09, 08 |
 | **Set up env vars correctly** | [03_environment.md](03_environment.md) | 01 |
 | **Apply consistent styling** | [14_styling.md](14_styling.md) | 07 |
 | **Style scrollbars globally** | [29_scrollbars.md](29_scrollbars.md) | 14 |
+| **Animate a surface, route, list, or transition** | [31_animations.md](31_animations.md) | 14, 18, 28 |
 | **Handle phone vs desktop layout** | [27_responsive.md](27_responsive.md) | 07 |
 | **Open a feature in a drawer or modal** | [28_surfaces.md](28_surfaces.md) | 11, 27 |
 | **Register a feature with the surface manager** | [28_surfaces.md](28_surfaces.md) | 15 |
@@ -168,14 +175,14 @@ API client, TanStack Query configuration, auth token handling. Verify one round-
 
 ### Phase 3 — First feature
 **Contracts:** 16, 15, 08, 23, 07, 09, 10  
-Build one complete feature following the 13-step workflow: types → API → actions → controller → provider → components → page. This establishes the pattern.
+Build one complete feature following the 14-step workflow: types → API → actions → controller → provider → components → page → dynamic loading → route. This establishes the pattern.
 
 ### Phase 4 — Cross-cutting infrastructure
-**Contracts:** 13, 14, 19, 20  
-Error boundaries, styling system, notification store — needed before building additional features.
+**Contracts:** 13, 14, 19, 20, 31  
+Error boundaries, styling system, notification store, animation baseline — needed before building additional features.
 
 ### Phase 5 — Quality baseline
-**Contracts:** 17, 18  
+**Contracts:** 17, 18, 30  
 Test harness, first feature coverage, bundle baseline.
 
 ### Phase 6 — Application-specific features
@@ -199,3 +206,6 @@ Real-time and file handling — add when the application requires them.
 11. **Client-side permissions are UX only, never a security boundary.** The backend enforces authorization. The frontend hides inaccessible UI as a courtesy.
 12. **Never store access tokens in `localStorage`.** Use `httpOnly` cookies for the refresh token and in-memory storage for the access token.
 13. **No `any` in production code.** Use `unknown` and narrow with Zod. Every `@ts-ignore` requires a comment explaining why.
+14. **Dynamic loading happens at boundaries.** Routes load pages, surfaces load overlay content, and dynamic adapters load heavy one-off libraries. Do not scatter dynamic imports through leaf components.
+15. **Animation is a UI concern.** Framer Motion is the default for UI transitions, CSS handles simple state transitions, and reduced motion must be respected.
+16. **Loading UI reflects the final UI.** Cards, pages, surfaces, and feature sections use skeleton reflections with the centralized shimmer utility instead of ad hoc spinners or mismatched placeholders.

@@ -37,7 +37,7 @@ An event is a plain dict:
 
 ```python
 {
-    "event_type": "record.created",
+    "event_type": "record:created",
     "schema_version": 1,
     "workspace_id": 7,
     "payload": {
@@ -53,7 +53,8 @@ An event is a plain dict:
 ```
 
 **Rules:**
-- `event_type` follows `<domain>.<verb>` naming: `record.created`, `record.state_changed`, `resource.published`.
+- `event_type` follows `<domain>:<verb>` naming: `record:created`, `record:state-changed`, `resource:published`.
+  The colon separator matches the frontend's `ServerToClientEvents` type — event types and socket event names must be identical so the realtime handler can pass the `event_type` directly to Socket.IO without translation.
 - Events are self-contained. Handlers must not need to re-query the database to understand the event.
 - Events are immutable after creation. Handlers must not modify event payloads.
 
@@ -70,7 +71,7 @@ from datetime import datetime, timezone
 
 def build_record_created_event(record) -> dict:
     return {
-        "event_type": "record.created",
+        "event_type": "record:created",
         "schema_version": 1,
         "workspace_id": record.workspace_id,
         "payload": {
@@ -85,6 +86,99 @@ def build_record_created_event(record) -> dict:
 ```
 
 Builders are pure functions — no database calls, no I/O.
+
+---
+
+## Batch events
+
+When a command processes multiple entities at once, it must emit **one batch event** carrying all affected `client_id`s — not N individual events. Emitting 50 individual `record:updated` events for a bulk update floods the Socket.IO room and causes 50 cache invalidations on the frontend.
+
+### Batch event builder
+
+```python
+# services/infra/events/builders/<domain>/record_events.py
+from datetime import datetime, timezone
+
+
+def build_records_bulk_updated_event(
+    records: list,
+    workspace_id: int,
+    triggered_by_user_id: int,
+) -> dict:
+    return {
+        "event_type": "record:batch-updated",
+        "schema_version": 1,
+        "workspace_id": workspace_id,
+        "payload": {
+            "client_ids": [r.client_id for r in records],
+            "count": len(records),
+        },
+        "meta": {
+            "triggered_by_user_id": triggered_by_user_id,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        },
+    }
+```
+
+Batch event payload rules:
+- `client_ids` is a list of **public** `client_id` strings — never internal DB `id`s.
+- `count` is informational; the frontend uses `ids` length, not `count`, for iteration.
+- For very large batches (200+ entities) where enumerating IDs is wasteful, use a broad signal event (`record:invalidate-all`) with no ID list.
+
+### Batch command pattern
+
+A bulk command collects all affected instances, commits once, then emits one batch event:
+
+```python
+def bulk_update_records(ctx: ServiceContext, record_client_ids: list[str], updates: dict) -> dict:
+    with db.session.begin():
+        records = (
+            db.session.query(Record)
+            .filter(Record.client_id.in_(record_client_ids))
+            .filter_by(workspace_id=ctx.workspace_id)
+            .all()
+        )
+        for record in records:
+            record.name = updates.get("name", record.name)
+            # ... apply updates
+
+        batch_event = build_records_bulk_updated_event(
+            records=records,
+            workspace_id=ctx.workspace_id,
+            triggered_by_user_id=ctx.user_id,
+        )
+
+    emit_record_events(ctx, [batch_event])   # one event, one socket push
+    return {"updated_count": len(records)}
+```
+
+### Broad signal — when IDs are too many to enumerate
+
+For operations that touch hundreds or thousands of entities (nightly reconciliation, mass import):
+
+```python
+def build_records_invalidate_all_event(workspace_id: int, triggered_by_user_id: int) -> dict:
+    return {
+        "event_type": "record:invalidate-all",
+        "schema_version": 1,
+        "workspace_id": workspace_id,
+        "payload": {},
+        "meta": {
+            "triggered_by_user_id": triggered_by_user_id,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        },
+    }
+```
+
+The frontend handler for `record:invalidate-all` calls `invalidateQueries` on the whole entity namespace with `refetchType: 'active'` — only components currently observing the entity re-fetch.
+
+### Single vs batch vs broadcast — decision rule
+
+| Command type | Entities changed | Emit |
+|---|---|---|
+| Single-entity create/update/delete | 1 | `record:created` / `record:updated` / `record:deleted` (single) |
+| Bulk command | 2–200 | `record:batch-updated` with full `client_ids` list |
+| Mass operation (import, reconcile) | 200+ | `record:invalidate-all` (no IDs) |
 
 ---
 
@@ -153,11 +247,15 @@ def handle_record_created_send_notification(event: dict) -> None:
 # services/infra/events/registry/<domain>.py
 from ..handlers.<domain>.record_notification import handle_record_created_send_notification
 from ..handlers.<domain>.record_analytics import handle_record_created_update_analytics
+from ..handlers.<domain>.record_batch_realtime import handle_records_bulk_updated_realtime
 
 RECORD_EVENT_HANDLERS = {
-    "record.created": [
+    "record:created": [
         handle_record_created_send_notification,
         handle_record_created_update_analytics,
+    ],
+    "record:batch-updated": [
+        handle_records_bulk_updated_realtime,
     ],
 }
 ```
@@ -216,7 +314,7 @@ Add a `schema_version` field to every event:
 ```python
 def build_record_created_event(record) -> dict:
     return {
-        "event_type": "record.created",
+        "event_type": "record:created",
         "schema_version": 1,          # increment when payload shape changes
         "workspace_id": record.workspace_id,
         "payload": {
@@ -260,6 +358,7 @@ Before touching an event builder, classify the change:
 | Change a key's semantics | **Yes** | Treat as a rename — old and new key coexist |
 | Add a new event type | No | Register handlers before deploying the builder |
 | Rename an event type | **Yes** | Emit both names during transition; see event type retirement below |
+| Change separator (`.` → `:`) | **Yes** | Treat as rename — emit both during transition |
 
 ---
 
@@ -325,7 +424,7 @@ When an event type is no longer needed:
 1. Remove the builder call from all commands (no new events are emitted)
 2. Leave the handlers registered — they must drain any pending outbox rows
 3. Wait until AppEventOutbox has no pending rows of the old event type:
-   SELECT COUNT(*) FROM app_event_outbox WHERE event_type = 'record.old_event' AND status = 'pending';
+   SELECT COUNT(*) FROM app_event_outbox WHERE event_type = 'record:old-event' AND status = 'pending';
 4. Unregister the handlers from the registry
 5. Delete the handler files
 ```
@@ -339,7 +438,7 @@ Never unregister a handler before the outbox queue for that event type is empty.
 Every event type emitted by the application must have an entry in `docs/events/catalog.md`:
 
 ```markdown
-## record.created
+## record:created
 
 **Schema version:** 2
 **Emitted by:** `create_record` command
@@ -401,5 +500,5 @@ A background report job or an alert must notify the team when failed outbox rows
 **Manual replay:** When the root cause of handler failures is fixed, failed rows can be replayed by resetting their status to `pending` and letting the dispatcher pick them up again. This must be done via a CLI command — not directly via SQL:
 
 ```bash
-flask replay-failed-events --event-type record.created --since 2025-03-01
+flask replay-failed-events --event-type record:created --since 2025-03-01
 ```

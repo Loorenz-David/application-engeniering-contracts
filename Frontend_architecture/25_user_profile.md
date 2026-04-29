@@ -6,7 +6,7 @@ User identity and user profile are two separate concerns stored in two separate 
 
 | Concern | Store | Available | Fields |
 |---|---|---|---|
-| **Auth identity** | Zustand `auth.store.ts` | Immediately (from sign-in response) | `id`, `email`, `name`, `role`, `permissions`, `workspaceId` |
+| **Auth identity** | Zustand `auth.store.ts` | Immediately (from sign-in response) | `id`, `email`, `name`, `roles`, `permissions`, `workspaceId` |
 | **Full profile** | TanStack Query (`/api/v1/me`) | After first fetch (pre-warmed at boot) | All identity fields + `avatar_file_id`, `timezone`, `preferences`, `created_at` |
 
 The auth store answers "who is this person and what can they do?" The profile query answers "what does this person look like and how do they prefer to work?"
@@ -26,7 +26,7 @@ export const UserProfileSchema = z.object({
   id:             z.string().uuid().transform((v) => v as UserId),
   email:          z.string().email(),
   name:           z.string(),
-  role:           z.enum(['admin', 'member', 'viewer']),
+  roles:          z.array(z.string().min(1)),
   permissions:    z.array(z.string()),
   workspace_id:   z.string().uuid().transform((v) => v as WorkspaceId),
   avatar_file_id: z.string().uuid().nullable(),
@@ -261,7 +261,7 @@ export function useCurrentUser() {
 ```
 
 **Decision guide:**
-- Need to check authentication or role → `useAuth()`
+- Need to check authentication or display broad role identity → `useAuth()`
 - Need avatar, timezone, or preferences → `useCurrentUser()`
 - Need to update profile → `useUpdateProfile()` or `useUpdateAvatar()` from the profile feature
 
@@ -288,7 +288,7 @@ useEffect(() => {
             id:          profile.id,
             email:       profile.email,
             name:        profile.name,
-            role:        profile.role,
+            roles:       profile.roles,
             permissions: profile.permissions,
           },
           profile.workspace_id,
@@ -326,6 +326,7 @@ export function useAvatarUrlQuery(fileId: string | null | undefined) {
     enabled:  Boolean(fileId),
     staleTime: 1000 * 60 * 10,   // presigned URL valid for 10 min on the backend
     gcTime:    1000 * 60 * 11,   // keep in cache slightly longer than staleTime
+    meta:      { persist: false }, // never write presigned URLs to persisted cache
   });
 }
 ```
@@ -373,7 +374,7 @@ export type { UserProfile, UpdateProfileInput, ProfileViewModel } from './types'
 
 - **Never store the full profile in the Zustand auth store.** Auth store holds identity only. Profile is server state.
 - **Never call `useCurrentUserQuery` directly from a component.** Use `useCurrentUser()`.
-- **Never cache `avatar_url`.** Cache `avatar_file_id`. Fetch the presigned URL on demand via `useAvatarUrlQuery`.
+- **Never store or persist `avatar_url` as profile data.** Cache `avatar_file_id`; fetch the presigned URL on demand via `useAvatarUrlQuery` and mark that URL query as non-persisted.
 - **Never sync all profile fields to the auth store on update.** Only sync `name` and `email` — the only identity fields that can change.
 - **Never skip pre-warming the TanStack cache in `AuthProvider`.** Doing so causes `useCurrentUser()` to show a loading state on every boot even though the data was just fetched.
 - **Never let a feature component import `useCurrentUserQuery` directly.** The public hook `useCurrentUser()` is the only export components should use.

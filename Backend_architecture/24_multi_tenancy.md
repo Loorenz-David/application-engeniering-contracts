@@ -64,7 +64,10 @@ class User(db.Model):
     email: Mapped[str] = mapped_column(String(255), nullable=False, unique=True, index=True)
     username: Mapped[str] = mapped_column(String(64), nullable=False, unique=True, index=True)
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
-    profile_picture: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    name: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    avatar_file_id: Mapped[str | None] = mapped_column(String(64), nullable=True)   # FK to files — see 34_file_storage.md
+    timezone: Mapped[str | None] = mapped_column(String(64), nullable=True)         # IANA tz string
+    preferences: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)  # {"email_notifications": bool, "theme": str}
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
@@ -269,9 +272,11 @@ The JWT encodes a session scoped to one workspace. It is the source of truth for
 {
     "user_id": 42,
     "workspace_id": 7,          # the active workspace
+    "workspace_client_id": "7f3c4d2a-...",  # UUID string — used in API responses
     "workspace_role_id": 12,    # the user's role in this workspace
     "base_role_id": 1,          # ADMIN=1, MEMBER=2, FIELD=3 — for fast permission checks
     "app_scope": "admin",       # surface scope, e.g. "admin" | "mobile" | "client"
+        "app_scope": "admin",       # application-defined surface string — set at login from the user's tier; e.g. "admin", "field"
     "time_zone": "America/New_York",
 }
 ```
@@ -294,6 +299,7 @@ def build_user_tokens(
     claims = {
         "user_id": user.id,
         "workspace_id": workspace.id,
+        "workspace_client_id": workspace.client_id,
         "workspace_role_id": membership.workspace_role_id,
         "base_role_id": membership.workspace_role.base_role_id,
         "app_scope": app_scope,
@@ -301,10 +307,24 @@ def build_user_tokens(
     }
     access_token = create_access_token(identity=str(user.id), additional_claims=claims)
     refresh_token = create_refresh_token(identity=str(user.id), additional_claims=claims)
-    return {"access_token": access_token, "refresh_token": refresh_token}
+    role: WorkspaceRole = membership.workspace_role
+    return {
+        "access_token":   access_token,
+        "_refresh_token": refresh_token,          # set as httpOnly cookie by the router — not in response body
+        "user": {
+            "id":          user.client_id,        # UUID string — public identifier
+            "email":       user.email,
+            "name":        user.name,
+            "roles":       [role.name],           # workspace role name(s) — display only
+            "permissions": role.permissions,      # feature:action strings
+        },
+        "workspace_id": workspace.client_id,      # UUID string — public identifier
+    }
 ```
 
 The membership is loaded from the database at login time. Everything the token needs is already in the membership row and the workspace row — no resolution logic, no flags.
+
+See [10_auth.md § Sign-in response shape](10_auth.md) for the router pattern that extracts `_refresh_token`, writes it as an `httpOnly` cookie, and returns the clean JSON body to the client.
 
 ---
 
@@ -340,7 +360,12 @@ def switch_workspace(ctx: ServiceContext) -> dict:
         app_scope=ctx.app_scope,
         time_zone=ctx.time_zone,
     )
-    return tokens
+    return {
+        "access_token": tokens["access_token"],
+        "user":         tokens["user"],
+        "workspace_id": tokens["workspace_id"],
+        # _refresh_token extracted and set as cookie by the router
+    }
 ```
 
 **No database mutation on workspace switch.** The user's current workspace is a session concept, not a stored field. Switching workspaces does not touch any row in any table.
@@ -372,6 +397,13 @@ class ServiceContext:
     @property
     def app_scope(self) -> str:
         return self._identity["app_scope"]
+
+    @property
+    def workspace_client_id(self) -> str:
+        """Public UUID string for the active workspace — for use in API responses only.
+        Requires workspace.client_id to be embedded in the JWT or looked up once per request.
+        Embed it as 'workspace_client_id' in JWT claims if used frequently."""
+        return self._identity["workspace_client_id"]
 
     @property
     def time_zone(self) -> str:

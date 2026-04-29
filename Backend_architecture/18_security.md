@@ -38,21 +38,21 @@ db.session.query(Record).filter(Record.workspace_id == ctx.workspace_id)
 
 Raw SQL strings (`text(...)`) are **forbidden** unless there is no ORM equivalent. If you must use `text()`, all parameters must be bound via the `params` argument — never f-strings or `.format()`.
 
-### Rule 3 — Validate integer IDs from URLs
+### Rule 3 — Resolve public IDs with workspace scope
 
-Path parameters from Flask routes are typed by Flask (`<int:record_id>`) but must still be validated against the caller's workspace scope:
+Public path parameters use `client_id`, not internal database IDs. They must still be resolved against the caller's workspace scope:
 
 ```python
-@record_bp.route("/<int:record_id>", methods=["GET"])
+@record_bp.route("/<string:record_client_id>", methods=["GET"])
 @jwt_required()
 @role_required([ADMIN, MEMBER])
-def get_record(record_id: int):
-    # record_id is an int — but does it belong to this workspace?
-    # The query/command enforces this — never skip it
+def get_record(record_client_id: str):
+    # record_client_id is public — but does it belong to this workspace?
+    # The query/command resolves it through the identity resolver — never skip it
     ...
 ```
 
-Never trust that a URL ID belongs to the caller's workspace without an explicit DB check in the command or query.
+Never trust that a URL ID belongs to the caller's workspace without resolver-enforced workspace filtering in the command or query. See [38_identity_resolution.md](38_identity_resolution.md).
 
 ---
 

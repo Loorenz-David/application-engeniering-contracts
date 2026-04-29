@@ -40,7 +40,7 @@ Requirements:
 
 Register the model in `models/__init__.py` so Alembic detects it.
 
-**Reference:** [03_models.md](03_models.md)
+**Reference:** [03_models.md](03_models.md), [38_identity_resolution.md](38_identity_resolution.md)
 
 ---
 
@@ -97,12 +97,15 @@ One file per business operation. Minimum for a new entity:
 Each command:
 1. Calls `parse_<operation>_<entity>_request(ctx.incoming_data)` — Pydantic validation
 2. Calls `ctx.require_permission(Permission.<RELEVANT>)` — authorization
-3. Opens a `db.session.begin()` transaction
-4. Calls domain guard before mutating state
-5. Emits an event via the event bus after the commit
-6. Returns a serialized `dict`
+3. Resolves existing entities through the domain resolver when needed
+4. Creates a `WorkContext` when the command has cascading or batch changes
+5. Opens a `db.session.begin()` transaction
+6. Calls domain guard before mutating state
+7. Tracks affected entities/events in `WorkContext` when used
+8. Emits events via the event bus after the commit
+9. Returns a serialized `dict` including authoritative related changes when needed
 
-**Reference:** [06_commands.md](06_commands.md)
+**Reference:** [06_commands.md](06_commands.md), [38_identity_resolution.md](38_identity_resolution.md), [39_work_context.md](39_work_context.md)
 
 ---
 
@@ -116,8 +119,9 @@ Each command:
 Each query:
 1. Always filters `<Entity>.workspace_id == ctx.workspace_id` first
 2. Always filters `<Entity>.is_deleted == False`
-3. Uses cursor-based pagination for list endpoints
-4. Returns a plain `dict` — no ORM instances
+3. Uses the domain resolver for single-entity `client_id` lookups
+4. Uses cursor-based pagination for list endpoints
+5. Returns a plain `dict` — no ORM instances
 
 **Reference:** [07_queries.md](07_queries.md)
 

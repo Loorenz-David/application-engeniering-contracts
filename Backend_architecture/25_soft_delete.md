@@ -41,15 +41,13 @@ In a command, soft deletion sets both fields atomically within the write transac
 
 ```python
 from datetime import datetime, timezone
+from my_app.services.identity.records import resolve_record
 
-def delete_record(ctx: ServiceContext, record_id: int) -> dict:
-    record = (
-        db.session.query(Record)
-        .filter(Record.id == record_id, Record.workspace_id == ctx.workspace_id)
-        .first()
-    )
-    if record is None or record.is_deleted:
-        raise NotFound(f"Record {record_id} not found.")
+
+def delete_record(ctx: ServiceContext) -> dict:
+    request = parse_delete_record_request(ctx.incoming_data)
+    # resolve_record enforces workspace_id and is_deleted == False — see 38_identity_resolution.md
+    record = resolve_record(ctx, request.ref)
 
     if not can_record_be_deleted(record):
         raise PermissionDenied("This record cannot be deleted in its current state.")
@@ -96,12 +94,11 @@ The only place deleted records are returned is:
 When fetching by ID (in commands or queries), always check `is_deleted`:
 
 ```python
-record = db.session.get(Record, record_id)
-if record is None or record.is_deleted or record.workspace_id != ctx.workspace_id:
-    raise NotFound(f"Record {record_id} not found.")
+# Use resolve_record (or resolve_entity), which enforces workspace_id and is_deleted automatically.
+# The resolver raises NotFound for missing, deleted, or wrong-workspace records,
+# which avoids revealing to callers that a record existed but was deleted (IDOR risk).
+record = resolve_record(ctx, request.ref)  # raises NotFound if missing, deleted, or wrong workspace
 ```
-
-Treat a deleted record the same as a missing record from the caller's perspective. Do not reveal that a record existed but was deleted — this is an IDOR risk.
 
 ---
 
@@ -140,18 +137,12 @@ Never rely on the database `ON DELETE CASCADE` for soft deletes — it only fire
 If the domain supports restore, implement it as an explicit command:
 
 ```python
-def restore_record(ctx: ServiceContext, record_id: int) -> dict:
-    record = (
-        db.session.query(Record)
-        .filter(
-            Record.id == record_id,
-            Record.workspace_id == ctx.workspace_id,
-            Record.is_deleted == True,        # must be deleted to restore
-        )
-        .first()
-    )
-    if record is None:
-        raise NotFound(f"Deleted record {record_id} not found.")
+def restore_record(ctx: ServiceContext) -> dict:
+    request = parse_restore_record_request(ctx.incoming_data)
+    # include_deleted=True is required — restore must find the logically deleted record
+    record = resolve_record(ctx, request.ref, include_deleted=True)
+    if not record.is_deleted:
+        raise ValidationFailed("Record is not deleted and cannot be restored.")
 
     with db.session.begin():
         record.is_deleted = False

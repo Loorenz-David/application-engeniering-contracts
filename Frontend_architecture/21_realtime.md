@@ -4,6 +4,8 @@
 
 Real-time updates are pushed from the backend via Socket.io. Backend workers emit events when entities change. The frontend reacts by invalidating the relevant TanStack Query cache entries — TanStack Query then decides whether to fetch immediately (if a component is actively observing that data) or lazily (if the user has navigated away).
 
+Event payload IDs are public client-facing IDs, matching API responses, route params, and query keys. Socket events never expose backend database primary keys.
+
 ```
 Backend worker
       ↓  emits
@@ -153,7 +155,9 @@ export const socketRegistry: SocketEventHandlers = {
 
   // System-level handlers defined at the app level, not in any feature
   'notification:new': ({ type, title, message }, { notify }) => {
-    notify[type as keyof typeof notify]?.(title, message);
+    if (type === 'success' || type === 'error' || type === 'info' || type === 'warning') {
+      notify[type](title, message);
+    }
   },
 
   'auth:session-expired': (_payload, _ctx) => {
@@ -212,7 +216,7 @@ export function useSocketStatus(): SocketStatus {
 
 export function SocketProvider({ children }: { children: React.ReactNode }) {
   const isAuthenticated = useAuthStore(selectIsAuthenticated);
-  const workspaceId     = useAuthStore((s) => s.user?.workspace_id);
+  const workspaceId     = useAuthStore((s) => s.workspaceId);
   const userId          = useAuthStore((s) => s.user?.id);
   const queryClient     = useQueryClient();
 
@@ -309,7 +313,7 @@ export function SocketProvider({ children }: { children: React.ReactNode }) {
       setSocket(null);
       setStatus({ connected: false, reconnecting: false });
     };
-  }, [isAuthenticated]);
+  }, [isAuthenticated, workspaceId, userId, queryClient]);
 
   return (
     <SocketContext.Provider value={socket}>
@@ -321,23 +325,39 @@ export function SocketProvider({ children }: { children: React.ReactNode }) {
 }
 ```
 
-Add `SocketProvider` inside `QueryClientProvider` in `src/app/providers.tsx` — it needs `useQueryClient()` to be available:
+Add `SocketProvider` inside `QueryClientProvider` and inside the auth lifecycle — it needs `useQueryClient()` and authenticated identity to be available. If `AuthProvider` lives in the router root route, `SocketProvider` usually lives inside it:
+
+```tsx
+// src/app/RootRoute.tsx
+export function RootRoute() {
+  return (
+    <AuthProvider>
+      <SocketProvider>
+        <SurfaceProvider>
+          <Outlet />
+        </SurfaceProvider>
+      </SocketProvider>
+    </AuthProvider>
+  );
+}
+```
+
+The outer app providers still wrap `RouterProvider` with `QueryClientProvider`, `MotionConfig`, and other router-independent providers:
 
 ```tsx
 // src/app/providers.tsx
-export function Providers({ children }: { children: React.ReactNode }) {
+export function AppProviders({ children }: { children: React.ReactNode }) {
   return (
-    <BreakpointProvider>
-      <SurfaceProvider>
-        <QueryClientProvider client={queryClient}>
-          <SocketProvider>                      {/* inside QueryClientProvider */}
-            <NotificationProvider config={notificationConfig}>
-              {children}
-            </NotificationProvider>
-          </SocketProvider>
-        </QueryClientProvider>
-      </SurfaceProvider>
-    </BreakpointProvider>
+    <QueryClientProvider client={queryClient}>
+      <MotionConfig reducedMotion="user">
+        <LazyMotion features={domAnimation}>
+          <BreakpointProvider>
+            {children}
+            <NotificationRenderer />
+          </BreakpointProvider>
+        </LazyMotion>
+      </MotionConfig>
+    </QueryClientProvider>
   );
 }
 ```

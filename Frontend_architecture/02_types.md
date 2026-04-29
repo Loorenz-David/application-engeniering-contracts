@@ -59,11 +59,11 @@ Zod validates all data that crosses into the app from outside TypeScript's type 
 | HTTP API responses | `api/fetch-<entity>.ts` — API function, before returning |
 | Form inputs | `zodResolver` in the form hook, at submit |
 | `localStorage` reads | Point of read, before storing in state |
-| URL search params | On parse, before passing to query hooks |
+| URL search params | Route/filter parser hook, before passing to query hooks |
 | Environment variables | `src/lib/env.ts` at startup (see `03_environment.md`) |
 | `postMessage` payloads | Event handler, before processing |
 
-Zod parsing happens once, at the boundary. It does not repeat at each layer.
+Zod parsing happens once, at the boundary. It does not repeat at each layer. A boundary may be an API function, form resolver, env parser, storage read helper, URL-param parser, or browser event handler. Components and controllers consume already-parsed values.
 
 ```ts
 // Correct — parsed at the API function boundary
@@ -139,7 +139,9 @@ type AsyncData<T> =
   | { status: 'error'; error: Error };
 ```
 
-TanStack Query returns this pattern natively via `query.status`. Use `status` to branch, not boolean flags.
+TanStack Query returns this pattern natively via `query.status`. Use `status` when a component or controller needs to distinguish more than two states. Boolean flags such as `isPending`, `isError`, and `isSuccess` are acceptable when the branch is simple and does not allow impossible state combinations in your own types.
+
+Do not create custom async-state objects with loose optional fields. Either use TanStack Query's result object or define an explicit discriminated union.
 
 ---
 
@@ -159,13 +161,15 @@ export type CustomerId  = Brand<string, 'CustomerId'>;
 export type ClientId    = Brand<string, 'ClientId'>;
 ```
 
+`ClientId` is only for a real domain entity named client/customer if the product has one. It is not the type for request DTO `client_id`. A create request's `client_id` becomes the created entity's branded public ID, such as `InvoiceId`.
+
 Branding happens at the Zod schema boundary using `.transform()`:
 
 ```ts
 // features/invoices/types.ts
 export const InvoiceSchema = z.object({
-  id:        z.string().uuid().transform((v) => v as InvoiceId),
-  client_id: z.string().uuid().transform((v) => v as ClientId),
+  id:          z.string().uuid().transform((v) => v as InvoiceId),
+  customer_id: z.string().uuid().transform((v) => v as CustomerId),
   // ...
 });
 ```
@@ -181,4 +185,5 @@ After this point, the TypeScript compiler rejects any attempt to pass an `Invoic
 - **Never import a type from a feature's internal files from outside that feature.** Import from `features/<feature>/index.ts` only.
 - **Never define the same type in two places.** One schema → one `z.infer` type → one source of truth.
 - **Never use `object` or `{}` as a type.** Use `Record<string, unknown>` for open objects, or define the shape explicitly.
-- **Never parse Zod schemas inside a component, controller, or hook.** Parsing belongs in API functions and form resolvers only.
+- **Never parse external data inside a render component or business controller.** Parse at the boundary helper: API function, form resolver, env parser, storage helper, URL-param parser, or event handler.
+- **Never re-parse data after it has crossed a validated boundary.** Pass the typed value through the layers.

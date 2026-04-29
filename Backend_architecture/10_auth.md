@@ -9,24 +9,27 @@ Claims stored in the JWT:
 ```python
 {
     "user_id": 42,
-    "workspace_id": 7,              # the active workspace — one per session
+    "workspace_id": 7,              # internal integer — used by service layer for DB joins
+    "workspace_client_id": "7f3c4d2a-...",  # UUID string — returned in API responses
     "workspace_role_id": 12,        # the user's role in this workspace
     "base_role_id": 1,              # permission tier: 1=ADMIN, 2=MEMBER, 3=FIELD
     "permissions": [                # resolved from WorkspaceRole.permissions
-        "manage_workspace",
-        "manage_members",
-        "manage_roles",
-        "view_records",
-        "create_records",
-        "view_analytics",
-        # ... all permissions the role grants
+        "workspace:manage",
+        "member:manage",
+        "role:manage",
+        "record:view",
+        "record:create",
+        "report:view",
+        # ... all permissions the role grants — feature:action format
     ],
-    "app_scope": "admin",           # surface scope, e.g. "admin" | "mobile" | "client"
+    "app_scope": "admin",           # app surface — application-defined string (e.g. "admin", "field"); set at login from the user's tier
     "time_zone": "America/New_York",
 }
 ```
 
 `permissions` is the list of string values from the `WorkspaceRole.permissions` JSONB column, resolved at login time from the database and embedded directly in the token. No permission database lookup is required on subsequent requests.
+
+Permission strings use the `feature:action` format (e.g. `"record:create"`, `"member:manage"`). This format must match the frontend permission keys declared in each feature's `permissions.ts` — the frontend checks membership via `permissionSet.has(key)`. See [28_roles_permissions.md](28_roles_permissions.md) for the full `Permission` enum and naming rules.
 
 **What is NOT in the token:**
 - `team_id` / `active_team_id` / `has_team_workspace` / `current_workspace` — legacy fields. Use `workspace_id` only.
@@ -128,7 +131,7 @@ def app_scope_required(required_scope: str | Iterable[str]):
     return decorator
 ```
 
-### Blueprint-level guard (preferred for entire driver or client blueprints)
+### Blueprint-level guard (preferred for entire field-tier or member-tier blueprints)
 
 ```python
 def install_blueprint_scope_guard(blueprint: Blueprint, required_scope: str | Iterable[str]) -> Blueprint:
@@ -153,8 +156,10 @@ def install_blueprint_scope_guard(blueprint: Blueprint, required_scope: str | It
 Apply immediately after blueprint creation:
 
 ```python
-driver_bp = Blueprint("api_v1_driver", __name__)
-install_blueprint_scope_guard(driver_bp, required_scope="driver")
+# Use the generic tier name as the scope string; alias to your domain name in router files.
+# e.g. rename "field" to "driver", "agent", "mobile", "client" to match your app surface.
+field_bp = Blueprint("api_v1_field", __name__)
+install_blueprint_scope_guard(field_bp, required_scope="field")
 ```
 
 ---
@@ -215,10 +220,13 @@ def check_if_token_revoked(jwt_header: dict, jwt_payload: dict) -> bool:
 RBAC decorators at the router layer check *who can call this endpoint*. Commands and queries perform additional checks on *whether the caller can act on this specific resource*:
 
 ```python
-def delete_record(ctx: ServiceContext, record_id: int) -> dict:
-    record = db.session.get(Record, record_id)
-    if record is None or record.workspace_id != ctx.workspace_id:
-        raise NotFound(f"Record {record_id} not found.")
+from my_app.services.identity.records import resolve_record
+
+
+def delete_record(ctx: ServiceContext) -> dict:
+    request = parse_delete_record_request(ctx.incoming_data)
+    # resolve_record enforces workspace_id, soft-delete filtering, and raises NotFound — see 38_identity_resolution.md
+    record = resolve_record(ctx, request.ref)
 
     if not can_record_be_deleted(record):
         raise PermissionDenied("This record cannot be deleted in its current state.")
@@ -248,3 +256,146 @@ is_valid = check_password_hash(hashed, plain_password)
 - Hardcode role IDs in business logic outside of `role_decorator.py`
 - Store auth state in the Flask `g` object across requests
 - Accept tokens via query string — tokens must be in the `Authorization: Bearer <token>` header only
+
+---
+
+## Sign-in response shape
+
+The sign-in command returns the access token, the user's identity, and the active workspace ID in a single flat envelope. The refresh token is written as an `httpOnly` `Set-Cookie` header by the router — it is not in the JSON body.
+
+```python
+# services/commands/auth/sign_in_user.py
+
+def build_auth_response(user, *, workspace, membership, app_scope: str, time_zone: str | None = None) -> dict:
+    """
+    Build the full sign-in / token-refresh response returned to the client.
+    Rename build_user_tokens → build_auth_response when adding this to your project.
+    """
+    role: WorkspaceRole = membership.workspace_role
+
+    claims = {
+        "user_id": user.id,
+        "workspace_id": workspace.id,          # internal integer — for service layer use only
+        "workspace_client_id": workspace.client_id,  # UUID string — for API response assembly
+        "workspace_role_id": role.id,
+        "base_role_id": role.base_role_id,
+        "permissions": role.permissions,       # feature:action strings
+        "app_scope": app_scope,
+        "time_zone": time_zone or workspace.time_zone or "UTC",
+    }
+
+    access_token  = create_access_token(identity=str(user.id), additional_claims=claims)
+    refresh_token = create_refresh_token(identity=str(user.id), additional_claims=claims)
+
+    return {
+        "access_token":  access_token,
+        # refresh_token is NOT returned in the body — the router sets it as an httpOnly cookie
+        "_refresh_token": refresh_token,       # prefixed _ so callers know to set it as a cookie
+        "user": {
+            "id":          user.client_id,     # UUID string — public identifier, never internal int
+            "email":       user.email,
+            "name":        user.name,
+            "roles":       [role.name],        # workspace role name(s) — for display / app-shell decisions only
+            "permissions": role.permissions,   # feature:action strings — for frontend can() checks
+        },
+        "workspace_id": workspace.client_id,   # UUID string — public identifier, never internal int
+    }
+```
+
+The router extracts `_refresh_token`, sets it as a cookie, and strips it from the body:
+
+```python
+# routers/api_v1/auth.py
+@auth_bp.route("/sign-in", methods=["POST"])
+def sign_in_route():
+    ctx = ServiceContext(incoming_data=request.get_json(), identity={})
+    outcome = run_service(sign_in_user, ctx)
+    if not outcome.ok:
+        return build_err(outcome.error)
+
+    data = outcome.value
+    refresh_token = data.pop("_refresh_token")    # remove before sending body
+
+    response = make_response(jsonify(data), 200)
+    response.set_cookie(
+        "refresh_token",
+        refresh_token,
+        httponly=True,
+        secure=True,
+        samesite="Lax",
+        max_age=30 * 24 * 60 * 60,  # 30 days
+    )
+    return response
+```
+
+**Rules for the response fields:**
+- `user.id` is `user.client_id` — the public UUID string. Never the internal integer primary key.
+- `workspace_id` is `workspace.client_id` — the public UUID string. Never the internal integer.
+- `user.roles` is an array containing the `WorkspaceRole.name` of the user's current workspace role (e.g. `["Admin"]`, `["Senior Editor"]`). Used by the frontend for display and broad app-shell navigation decisions only — not for permission checks.
+- `user.permissions` is the resolved `feature:action` string list. The frontend's `can()` hook checks this directly.
+- The token-refresh endpoint (`POST /api/v1/auth/refresh`) must return the same body shape.
+
+---
+
+## `GET /api/v1/me` — current user profile
+
+The frontend calls this on every boot (via `AuthProvider`) and after profile updates. It returns the full user identity and profile data for the active workspace session.
+
+**Required response shape:**
+
+```python
+def get_current_user(ctx: ServiceContext) -> dict:
+    """
+    Returns the full profile for the authenticated user in their active workspace.
+    Endpoint: GET /api/v1/me
+    """
+    user = db.session.query(User).filter(User.id == ctx.user_id).one()
+    membership = (
+        db.session.query(WorkspaceMembership)
+        .filter(
+            WorkspaceMembership.workspace_id == ctx.workspace_id,
+            WorkspaceMembership.user_id == user.id,
+            WorkspaceMembership.is_active == True,
+        )
+        .one()
+    )
+    role: WorkspaceRole = membership.workspace_role
+
+    return {
+        "id":             user.client_id,          # UUID string
+        "email":          user.email,
+        "name":           user.name,
+        "roles":          [role.name],             # workspace role name(s) — display only
+        "permissions":    role.permissions,        # feature:action strings — authoritative
+        "workspace_id":   ctx.workspace_client_id, # UUID string — from ServiceContext
+        "avatar_file_id": user.avatar_file_id,     # UUID string | None — see 34_file_storage.md
+        "timezone":       user.timezone or "UTC",  # IANA tz string
+        "preferences": {
+            "email_notifications": user.preferences.get("email_notifications", True),
+            "theme":               user.preferences.get("theme", "system"),
+        },
+        "created_at": user.created_at.isoformat(),
+    }
+```
+
+**User model columns required by this endpoint** (add to `User` in [24_multi_tenancy.md](24_multi_tenancy.md)):
+
+```python
+name:           Mapped[str]              = mapped_column(String(255), nullable=False, default="")
+avatar_file_id: Mapped[str | None]       = mapped_column(String(64), ForeignKey("files.id"), nullable=True)
+timezone:       Mapped[str | None]       = mapped_column(String(64), nullable=True)
+preferences:    Mapped[dict]             = mapped_column(JSONB, nullable=False, default=dict)
+```
+
+`preferences` is a JSONB dict. The current schema is:
+```json
+{
+  "email_notifications": true,
+  "theme": "light" | "dark" | "system"
+}
+```
+
+**Rules:**
+- `roles` uses the same shape as the sign-in response — `WorkspaceRole.name` string(s).
+- `permissions` is read live from the database on this endpoint (the JWT may be stale if a role was updated). This is the one place where the authoritative permission set is re-fetched. The `ctx.workspace_client_id` property on `ServiceContext` resolves the workspace's public `client_id` — add it as a cached lookup or a claim in the JWT.
+- The frontend `AuthProvider` refreshes the auth store from this response on boot — see [Frontend_architecture/12_auth.md](../../Frontend_architecture/12_auth.md).

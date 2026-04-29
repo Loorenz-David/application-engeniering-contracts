@@ -27,7 +27,7 @@ An action wraps exactly one state-changing operation. It is the frontend equival
 
 **Rules:**
 - Wraps one `useMutation` (or one side-effect API call that does not need caching)
-- Handles its own cache invalidation on success
+- Handles its own optimistic snapshot, rollback, authoritative response seeding, and cache invalidation
 - Does not read from queries — it only writes
 - Is reusable: the same action can be called from multiple controllers or flows
 
@@ -65,17 +65,11 @@ export function useCreateInvoice() {
       return { previousLists };
     },
 
-    onError: (_err, _input, context) => {
-      context?.previousLists.forEach(([key, data]) =>
-        queryClient.setQueryData(key, data),
-      );
-    },
-
-    onSuccess: (data, input) => {
+    onSuccess: (invoice, input) => {
       notify.success('Invoice created');
       queryClient.setQueryData(
         invoiceKeys.detail(input.client_id as InvoiceId),
-        data,
+        invoice,
       );
     },
 
@@ -83,7 +77,10 @@ export function useCreateInvoice() {
       context?.previousLists.forEach(([key, data]) =>
         queryClient.setQueryData(key, data),
       );
-      notify.error('Invoice not saved', 'Your changes are preserved. Fix the issue and try again.');
+      notify.error(
+        'Invoice not saved',
+        'Your changes are preserved. Fix the issue and try again.',
+      );
     },
 
     onSettled: () => {
@@ -237,12 +234,12 @@ A controller is the single hook a provider calls to build the full API for one U
 
 ```ts
 // features/invoices/controllers/use-invoice-list.controller.ts
-import { useSuspenseQuery } from '@tanstack/react-query';
 import { useInvoicesQuery } from '@/features/invoices/api/use-invoices';
 import { useCreateInvoice } from '@/features/invoices/actions/use-create-invoice';
 import { useDeleteInvoice } from '@/features/invoices/actions/use-delete-invoice';
 import { useInvoiceFilters } from '@/features/invoices/controllers/use-invoice-filters';
-import { usePermission } from '@/features/auth';
+import { usePermissions } from '@/hooks/use-permissions';
+import { invoicePermissions } from '@/features/invoices/permissions';
 import { toInvoiceViewModel } from '@/features/invoices/types';
 
 export function useInvoiceListController() {
@@ -252,8 +249,9 @@ export function useInvoiceListController() {
   const createAction = useCreateInvoice();
   const deleteAction = useDeleteInvoice();
 
-  const canCreate = usePermission('invoices:create');
-  const canDelete = usePermission('invoices:delete');
+  const { can } = usePermissions();
+  const canCreate = can(invoicePermissions.create);
+  const canDelete = can(invoicePermissions.delete);
 
   const invoices = (data?.items ?? []).map(toInvoiceViewModel);
 
@@ -278,8 +276,10 @@ export function useInvoiceListController() {
     isDeleting: deleteAction.isPending,
 
     // Permissions (for conditional rendering decisions)
-    canCreate,
-    canDelete,
+    can: {
+      create: canCreate,
+      delete: canDelete,
+    },
   };
 }
 
@@ -315,7 +315,8 @@ const STEPS: Step[] = ['client', 'line_items', 'details', 'review'];
 
 export function useCreateInvoiceFlow(onComplete: (id: InvoiceId) => void) {
   const [currentStep, setCurrentStep] = useState<Step>('client');
-  const [draft, setDraft] = useState<Partial<CreateInvoiceInput>>({});
+  const [clientId] = useState(() => crypto.randomUUID() as InvoiceId);
+  const [draft, setDraft] = useState<Partial<CreateInvoiceInput>>({ client_id: clientId });
 
   const createAction = useCreateInvoice();
 
@@ -334,13 +335,12 @@ export function useCreateInvoiceFlow(onComplete: (id: InvoiceId) => void) {
   }, [stepIndex, isFirst]);
 
   const submit = useCallback(() => {
-    // Generate the entity ID here so it is known before the request fires.
+    // The entity ID was generated when the flow started.
     // The optimistic cache entry uses this ID; so does the navigation target.
-    const id    = crypto.randomUUID() as InvoiceId;
-    const input = CreateInvoiceInputSchema.parse({ ...draft, client_id: id });
+    const input = CreateInvoiceInputSchema.parse({ ...draft, client_id: clientId });
     createAction.createInvoice(input);  // fire — do not await
-    onComplete(id);                      // navigate immediately with the known ID
-  }, [draft, createAction, onComplete]);
+    onComplete(clientId);                // navigate immediately with the known ID
+  }, [draft, clientId, createAction, onComplete]);
 
   return {
     currentStep,
