@@ -34,6 +34,7 @@ class Notification(IdentityMixin, Base):
     __tablename__ = "notifications"
 
     recipient_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+        recipient_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id", deferrable=True), nullable=False, index=True)
     entity_type: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
     entity_client_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
     notification_type: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
@@ -60,6 +61,8 @@ class PushSubscription(IdentityMixin, Base):
     __tablename__ = "push_subscriptions"
 
     user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+        user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id", deferrable=True), nullable=False, index=True)
+        user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id", deferrable=True), nullable=False, index=True)
     endpoint: Mapped[str] = mapped_column(String(1024), nullable=False, unique=True)
     p256dh: Mapped[str] = mapped_column(String(512), nullable=False)
     auth: Mapped[str] = mapped_column(String(512), nullable=False)

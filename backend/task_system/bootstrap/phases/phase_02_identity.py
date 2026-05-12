@@ -54,7 +54,7 @@ class HistoryRecord:
 
     @declared_attr
     def updated_by_id(cls) -> Mapped[int]:
-        return mapped_column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+        return mapped_column(Integer, ForeignKey("users.id", deferrable=True), nullable=False, index=True)
 
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -93,7 +93,7 @@ class User(IdentityMixin, Base):
         nullable=False,
     )
     created_by_id: Mapped[int | None] = mapped_column(
-        Integer, ForeignKey("users.id"), nullable=True
+        Integer, ForeignKey("users.id", deferrable=True), nullable=True
     )
 
     # Identity
@@ -115,15 +115,15 @@ class User(IdentityMixin, Base):
 
     # FK shortcuts — updated atomically with the new child record
     last_app_view_record_id: Mapped[int | None] = mapped_column(
-        Integer, ForeignKey("user_app_view_records.id"), nullable=True
+        Integer, ForeignKey("user_app_view_records.id", deferrable=True), nullable=True
     )
     last_history_record_id: Mapped[int | None] = mapped_column(
-        Integer, ForeignKey("user_history_records.id"), nullable=True
+        Integer, ForeignKey("user_history_records.id", deferrable=True), nullable=True
     )
 
     # Role (wired in Phase 4)
     role_id: Mapped[int | None] = mapped_column(
-        Integer, ForeignKey("roles.id"), nullable=True, index=True
+        Integer, ForeignKey("roles.id", deferrable=True), nullable=True, index=True
     )
 
     # Relationships
@@ -173,7 +173,7 @@ class UserAppViewRecord(IdentityMixin, Base):
     __tablename__ = "user_app_view_records"
 
     user_id: Mapped[int] = mapped_column(
-        Integer, ForeignKey("users.id"), nullable=False, index=True
+        Integer, ForeignKey("users.id", deferrable=True), nullable=False, index=True
     )
     entity_type: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
     entity_client_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
@@ -207,7 +207,7 @@ class UserHistoryRecord(IdentityMixin, HistoryRecord, Base):
     __tablename__ = "user_history_records"
 
     user_id: Mapped[int] = mapped_column(
-        Integer, ForeignKey("users.id"), nullable=False, index=True
+        Integer, ForeignKey("users.id", deferrable=True), nullable=False, index=True
     )
 
     user: Mapped["User"] = relationship(

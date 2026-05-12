@@ -85,6 +85,10 @@ APP_ENV=validation python scripts/validate_bootstrap.py
 
 Assume a fresh folder named `Manager-app` and no Git history yet.
 
+For a complete copy-paste-ready walkthrough, see **[backend/task_system/README.md — Complete fresh-start workflow](task_system/README.md#complete-fresh-start-workflow-copy-paste-ready)**.
+
+Otherwise, follow the steps below:
+
 ### 1) Create the repo folder and initialize Git
 
 ```bash

@@ -107,6 +107,60 @@ python3 resolver.py "add replay and worker retry diagnostics"
 
 Bootstrap the backend umbrella layout itself.
 
+### Complete fresh-start workflow (copy-paste ready)
+
+This is the full sequence from nothing to running app:
+
+```bash
+# Step 1: Bootstrap backend umbrella (creates architecture, docs, skills, app scaffold)
+cd /Users/davidloorenz/Desktop/Developer/Application_contracts/backend/task_system
+python3 run/bootstrap_backend_system.py --output-dir /path/to/new-app-root
+
+# Step 2: Generate Phase 1 (config, models, routers, migrations, docker-compose)
+python3 run/bootstrap.py --app-name my_app --target /path/to/new-app-root/backend/app --phase all
+
+# Step 3: Set up Python environment in the generated app
+cd /path/to/new-app-root/backend/app
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt -r requirements-dev.txt
+
+# Step 4: Copy example env file
+cp .env.example .env
+
+# Step 5: Export development profile
+export APP_ENV=development
+
+# Step 6: Start Docker services (postgres + redis on auto-detected free ports)
+make dev-up
+
+# Step 7: Run database migrations
+make db-migrate
+
+# Step 8: Start the FastAPI app (runs on auto-detected free port)
+make run
+
+# Step 9: Test health endpoint in another terminal
+curl http://localhost:8000/health
+# Expected: {"status":"ok","services":{"db":"ok","redis":"ok"}}
+```
+
+### Make targets reference
+
+After `cd /path/to/new-app-root/backend/app`:
+
+```bash
+make help              # Show all targets
+make dev-up           # Start Docker services (postgres + redis)
+make dev-down         # Stop Docker services
+make dev-logs         # Stream Docker logs
+make db-init          # Wait for postgres ready (rarely needed with --wait)
+make db-migrate       # Run Alembic migrations
+make run              # Start FastAPI app with hot reload
+```
+
+### APP_ENV profile selection
+
 When running generated app commands, place `APP_ENV` before the command:
 
 ```bash

@@ -84,7 +84,8 @@ class WorkspaceRole(IdentityMixin, Base):
     )
 
     workspace_id: Mapped[int] = mapped_column(Integer, ForeignKey("workspaces.id"), nullable=False, index=True)
-    role_id: Mapped[int] = mapped_column(Integer, ForeignKey("roles.id"), nullable=False, index=True)
+    workspace_id: Mapped[int] = mapped_column(Integer, ForeignKey("workspaces.id", deferrable=True), nullable=False, index=True)
+    role_id: Mapped[int] = mapped_column(Integer, ForeignKey("roles.id", deferrable=True), nullable=False, index=True)
     extra_claims: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
 
     role: Mapped["Role"] = relationship("Role")
@@ -108,6 +109,7 @@ class Workspace(IdentityMixin, Base):
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     time_zone: Mapped[str] = mapped_column(String(64), nullable=False, default="UTC")
     created_by_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("users.id"), nullable=True)
+        created_by_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("users.id", deferrable=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),
@@ -130,8 +132,9 @@ class WorkspaceMembership(IdentityMixin, Base):
     )
 
     user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False, index=True)
-    workspace_id: Mapped[int] = mapped_column(Integer, ForeignKey("workspaces.id"), nullable=False, index=True)
-    workspace_role_id: Mapped[int] = mapped_column(Integer, ForeignKey("workspace_roles.id"), nullable=False)
+    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id", deferrable=True), nullable=False, index=True)
+    workspace_id: Mapped[int] = mapped_column(Integer, ForeignKey("workspaces.id", deferrable=True), nullable=False, index=True)
+    workspace_role_id: Mapped[int] = mapped_column(Integer, ForeignKey("workspace_roles.id", deferrable=True), nullable=False)
 
     workspace_role: Mapped["WorkspaceRole"] = relationship("WorkspaceRole")
 """, force=force)
