@@ -170,6 +170,96 @@ git remote add origin git@github.com:<your-org-or-user>/Manager-app.git
 git push -u origin main
 ```
 
+## Post-generation app setup and launch
+
+After regenerating Phase 1 with an updated bootstrap generator (or after a fresh `--phase all` generation), follow these steps to setup and run the generated application.
+
+### Regenerate Phase 1 (if updating generator code)
+
+Mode A (external canonical repo):
+
+```bash
+cd /Users/davidloorenz/Desktop/Developer/Application_contracts/backend/task_system
+python3 run/bootstrap.py --app-name manager_app --target /path/to/Manager-app/backend/app --phase 1 --force
+```
+
+Mode B (self-contained app repo):
+
+```bash
+cd /path/to/Manager-app/application_contracts/backend/task_system
+python3 run/bootstrap.py --app-name manager_app --target /path/to/Manager-app/backend/app --phase 1 --force
+```
+
+### Setup environment profile
+
+Copy the example environment file to the active profile:
+
+```bash
+cd /path/to/Manager-app/backend/app
+cp .env.example .env
+```
+
+The `.env` file is loaded when `APP_ENV=development` is set. For other profiles (`testing`, `validation`, `production`), corresponding `.env.testing`, `.env.validation`, `.env.production` files are available.
+
+### Start Docker services
+
+Start PostgreSQL 17 and Redis 7 containers:
+
+```bash
+cd /path/to/Manager-app/backend/app
+APP_ENV=development make dev-up
+```
+
+Wait for services to be healthy. Check logs:
+
+```bash
+APP_ENV=development make dev-logs
+```
+
+### Run database migrations
+
+Apply all pending Alembic migrations:
+
+```bash
+cd /path/to/Manager-app/backend/app
+APP_ENV=development alembic upgrade head
+```
+
+### Start the application
+
+Launch the FastAPI app with hot reload:
+
+```bash
+cd /path/to/Manager-app/backend/app
+APP_ENV=development python run.py
+```
+
+The app will start on `http://localhost:5000` by default. Verify it's running:
+
+```bash
+curl http://localhost:5000/health
+```
+
+You should see a JSON response with status information.
+
+### Validate the bootstrap
+
+Optional: run the bootstrap validation script to verify all components are correctly generated and configured:
+
+```bash
+cd /path/to/Manager-app/backend/app
+APP_ENV=validation python scripts/validate_bootstrap.py
+```
+
+### Stop services (when done)
+
+To stop and clean up Docker containers:
+
+```bash
+cd /path/to/Manager-app/backend/app
+APP_ENV=development make dev-down
+```
+
 ## Ongoing sync when core contracts change
 
 Mode A (external canonical repo):
