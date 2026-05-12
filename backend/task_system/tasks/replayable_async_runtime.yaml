@@ -1,0 +1,37 @@
+id: replayable_async_runtime
+name: Replayable Async Runtime
+
+intent_patterns:
+  - replay
+  - recover
+  - reprocess
+  - failed jobs
+  - failed events
+
+contracts:
+  - id: "52"
+    file: 52_replayability.md
+    reason: Replay-safe operational model
+  - id: "11"
+    file: 11_infra_events.md
+    reason: Event pipeline replay boundaries
+  - id: "16"
+    file: 16_background_jobs.md
+    reason: Job idempotency and retry interactions
+  - id: "49"
+    file: 49_observability_runtime.md
+    reason: Replay traceability and runtime telemetry
+  - id: "53"
+    file: 53_operational_cli.md
+    reason: Operational replay command governance
+
+implementation_steps:
+  - Define replay metadata and envelope handling
+  - Route replay through production handlers
+  - Add dry-run-first replay commands
+  - Emit replay-scoped diagnostics for each unit
+
+constraints:
+  - Replay is not full event sourcing
+  - Replay paths must remain idempotent
+  - Replay logs must include replay_id and source metadata

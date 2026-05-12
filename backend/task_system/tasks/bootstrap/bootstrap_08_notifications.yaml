@@ -1,0 +1,84 @@
+phase: 9
+id: bootstrap_09_notifications
+name: "Phase 9 — Notification System"
+description: >
+  Notification and PushSubscription models, NotificationPin model, VAPID/Web Push
+  delivery, CREATE_NOTIFICATIONS and SEND_PUSH_NOTIFICATION task handlers, the
+  domain-layer notification target resolver pattern, and pin/unpin commands.
+  After this phase, any command can trigger in-app and browser push notifications
+  to the correct set of users while excluding those already viewing the entity.
+depends_on: [1, 2, 3, 4, 5, 6, 7, 8]
+
+contracts:
+  - id: "47"
+    file: 47_notifications.md
+    reason: Full notification architecture — Notification + PushSubscription + NotificationPin models, VAPID delivery, task handlers, NotificationType enum, resolver pattern
+
+enums:
+  - name: NotificationType
+    location: domain/notifications/enums.py
+    scope: expandable
+    description: >
+      Defines the type of each notification — used to drive the notification title,
+      body, icon, and deep-link URL on the client. No hardcoded essential values:
+      all notification types are application-specific. Every NotificationType value
+      must have a corresponding entry in the frontend notification renderer.
+    essential_values: []
+    expandable_note: >
+      Add a new value here when a new domain event should trigger a notification.
+      Each value needs: (1) an entry in this enum, (2) handling in the
+      CREATE_NOTIFICATIONS task handler (title/body/link logic), (3) a corresponding
+      renderer in the frontend notification UI. Common starting values:
+      NEW_MESSAGE, CASE_ASSIGNED, CASE_STATUS_CHANGED, MENTIONED.
+
+implementation_steps:
+  - "Write Notification model in models/tables/notifications/notification.py: recipient_id FK, entity_type, entity_client_id, notification_type, title, body, link, is_read, is_archived, sent_at"
+  - "Write PushSubscription model in models/tables/notifications/push_subscription.py: user_id FK, endpoint (unique), p256dh, auth, user_agent, last_used_at"
+  - "Write NotificationPin model in models/tables/notifications/notification_pin.py: user_id FK, entity_type, entity_client_id, pinned_at — UniqueConstraint on (user_id, entity_type, entity_client_id)"
+  - "Register all three models in models/__init__.py"
+  - "Write Alembic migration for all three tables"
+  - "Implement NotificationType enum in domain/notifications/enums.py"
+  - "Implement the notification target resolver pattern in domain/<entity>/notification_targets.py: resolve_<entity>_notification_targets(session, entity, *, exclude_user_id) using asyncio.gather over independent private source functions (_get_participants, _get_pinned_subscribers)"
+  - "Implement VAPID key loading from settings (VAPID_PRIVATE_KEY, VAPID_PUBLIC_KEY, VAPID_SUBJECT)"
+  - "Implement CREATE_NOTIFICATIONS task handler in services/tasks/notifications/create_notifications.py: resolves targets via domain resolver, calls exclude_viewing to filter out present users, creates Notification rows, enqueues SEND_PUSH_NOTIFICATION for each target with a push subscription"
+  - "Implement SEND_PUSH_NOTIFICATION task handler in services/tasks/notifications/send_push_notification.py: loads PushSubscription, sends VAPID push via pywebpush, handles 410 Gone by deleting the subscription"
+  - "Register CREATE_NOTIFICATIONS and SEND_PUSH_NOTIFICATION handlers in TASK_REGISTRY (replacing Phase 6 stubs)"
+  - "Implement subscribe_push command: upsert PushSubscription on (user_id, endpoint), update last_used_at"
+  - "Implement unsubscribe_push command: delete PushSubscription by endpoint"
+  - "Implement pin_notification command: upsert NotificationPin — idempotent if already pinned"
+  - "Implement unpin_notification command: delete NotificationPin — silent no-op if not pinned"
+  - "Wire notification socket delivery: CREATE_NOTIFICATIONS emits notification:new via user room socket after creating the Notification row"
+  - "Add notification router endpoints: POST /notifications/push-subscriptions, DELETE /notifications/push-subscriptions, POST /notifications/pins, DELETE /notifications/pins"
+
+constraints:
+  - "CREATE_NOTIFICATIONS always calls exclude_viewing before dispatching — users currently viewing the entity must not receive a notification"
+  - "exclude_viewing uses presence.get_viewers(entity_type, entity_client_id) — the same Redis layer used by the socket system"
+  - "Notification target resolution is owned by the domain resolver (domain/<entity>/notification_targets.py) — never write inline target queries in commands"
+  - "The resolver uses asyncio.gather over independent source functions — adding a new target source requires only a new private function and one gather entry"
+  - "SEND_PUSH_NOTIFICATION must handle 410 Gone responses by deleting the stale PushSubscription — never retry a 410"
+  - "NotificationPin uses entity_type from EntityType enum values — never raw strings"
+  - "Pinned users receive notifications regardless of participant list — the resolver union includes both sources"
+  - "socket notification:new is emitted via the user room (not the entity room) — the recipient receives it even when not viewing the entity"
+
+output_requirements:
+  - "models/tables/notifications/notification.py — Notification model"
+  - "models/tables/notifications/push_subscription.py — PushSubscription model"
+  - "models/tables/notifications/notification_pin.py — NotificationPin model"
+  - "domain/notifications/enums.py — NotificationType"
+  - "domain/<entity>/notification_targets.py — resolver pattern (implement for at least one entity)"
+  - "services/tasks/notifications/create_notifications.py — CREATE_NOTIFICATIONS handler"
+  - "services/tasks/notifications/send_push_notification.py — SEND_PUSH_NOTIFICATION handler"
+  - "services/commands/notifications/subscribe_push.py and unsubscribe_push.py"
+  - "services/commands/notifications/pin_notification.py and unpin_notification.py"
+  - "routers/api_v1/notifications.py — notification router"
+  - "migrations/versions/<rev>_create_notification_tables.py — applied"
+
+definition_of_done:
+  - "A command that enqueues CREATE_NOTIFICATIONS results in Notification rows for all resolved targets minus those currently viewing"
+  - "A user currently viewing the entity (tracked in Redis presence) does not receive a Notification row"
+  - "A pinned user receives a notification even when not in the participant list"
+  - "SEND_PUSH_NOTIFICATION delivers a VAPID push to a valid subscription endpoint"
+  - "A 410 Gone response from the push endpoint causes the PushSubscription row to be deleted"
+  - "notification:new socket event arrives in the recipient's user room after CREATE_NOTIFICATIONS runs"
+  - "pin_notification is idempotent — pinning twice does not create duplicate NotificationPin rows"
+  - "unpin_notification is a silent no-op when no pin exists"

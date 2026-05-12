@@ -1,0 +1,38 @@
+phase: 13
+id: bootstrap_13_ci_cd
+name: "Phase 13 — CI/CD"
+description: >
+  Deterministic GitHub Actions workflows for linting, formatting, tests,
+  Docker validation, migration checks, and health/readiness validation.
+depends_on: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+
+contracts:
+  - id: "33"
+    file: 33_deployment.md
+    reason: Deployment parity, CI validation, fail-loud delivery
+  - id: "31"
+    file: 31_health_observability.md
+    reason: Health and readiness validation in CI
+
+enums: []
+
+implementation_steps:
+  - "Generate .github/workflows CI pipeline"
+  - "Add jobs for lint, format, tests, docker validation, migrations, health checks"
+  - "Generate CI validation script and make validate command"
+  - "Ensure service readiness checks fail loudly"
+
+constraints:
+  - "CI must be deterministic and reproducible"
+  - "Containerized validation must run in pipeline"
+  - "Migrations and health checks must be explicit CI gates"
+
+output_requirements:
+  - ".github/workflows/ci.yml"
+  - "scripts/ci_validate.py"
+  - "Makefile lint/format/validate commands"
+
+definition_of_done:
+  - "CI workflow includes lint, format, test, docker-validation, migrations-health jobs"
+  - "CI fails loudly when any readiness check fails"
+  - "Make validate executes the CI validation script locally"

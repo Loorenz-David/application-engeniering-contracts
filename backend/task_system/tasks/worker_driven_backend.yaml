@@ -1,0 +1,38 @@
+id: worker_driven_backend
+name: Worker-driven Backend
+
+intent_patterns:
+  - worker
+  - queue
+  - retry
+  - dead letter
+  - dlq
+  - async processing
+
+contracts:
+  - id: "16"
+    file: 16_background_jobs.md
+    reason: Job runtime orchestration and retries
+  - id: "12"
+    file: 12_infra_redis.md
+    reason: Queue backend and key strategy
+  - id: "51"
+    file: 51_worker_runtime.md
+    reason: Worker lifecycle, retry and dead-letter policy
+  - id: "49"
+    file: 49_observability_runtime.md
+    reason: Structured worker diagnostics and context IDs
+  - id: "54"
+    file: 54_ci_cd_runtime.md
+    reason: CI runtime validation for worker paths
+
+implementation_steps:
+  - Define queue/runtime registration
+  - Enforce bounded retries and dead-letter transitions
+  - Add worker health checks and diagnostics
+  - Validate worker flow in CI
+
+constraints:
+  - No implicit task auto-discovery
+  - Retries must be deterministic
+  - Dead-letter transitions must be observable

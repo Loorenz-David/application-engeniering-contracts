@@ -1,0 +1,72 @@
+phase: 1
+id: bootstrap_01_base
+name: "Phase 1 — Base Application Scaffold"
+description: >
+  FastAPI app factory, Pydantic-Settings config, DomainError hierarchy, folder
+  structure, async SQLAlchemy engine, Alembic initialisation, health check, and
+  run.py development entry point. Everything else is built on top of this phase.
+depends_on: []
+
+contracts:
+  - id: "01"
+    file: 01_architecture.md
+    reason: Layer map and folder structure — read this before creating any file
+  - id: "02"
+    file: 02_app_factory.md
+    reason: FastAPI create_app(), lifespan context manager, pydantic-settings config, async DB engine, uvicorn config
+  - id: "05"
+    file: 05_errors.md
+    reason: DomainError hierarchy — must exist before any router or command is written
+  - id: "21"
+    file: 21_naming_conventions.md
+    reason: File, function, class, DB, route, env-var naming — defines all conventions from day one
+  - id: "30"
+    file: 30_migrations.md
+    reason: Alembic setup and zero-downtime migration patterns — init Alembic before writing any model
+
+enums: []
+
+implementation_steps:
+  - "Create the canonical folder structure from 01_architecture.md: my_app/, models/, domain/, services/, routers/, errors/, sockets/, migrations/, scripts/"
+  - "Implement create_app() in my_app/__init__.py — lifespan context manager (init_db / close_db), CORSMiddleware, _register_routers(), _validate_config()"
+  - "Implement Settings in config.py using pydantic-settings: database_url (must use asyncpg driver), redis_uri, jwt_secret_key, frontend_origins, environment, jwt TTL fields"
+  - "Implement async DB layer in models/database.py: create_async_engine, async_sessionmaker, init_db(), close_db(), get_db() FastAPI dependency"
+  - "Declare SQLAlchemy DeclarativeBase in models/base/base.py — all models inherit from this Base; import all model modules in models/__init__.py so Alembic detects them"
+  - "Implement DomainError hierarchy in errors/ following 05_errors.md: base.py (DomainError), not_found.py, permissions.py, validation.py — each maps to an HTTP status"
+  - "Implement router skeleton: routers/api_v1/__init__.py with register_v1_routers(app), routers/http/response.py with build_ok() / build_err() helpers"
+  - "Implement health check endpoint in routers/api_v1/health.py — APIRouter, checks DB (SELECT 1) and Redis, returns 200 when healthy, 503 when degraded"
+  - "Initialise Alembic: alembic init migrations — configure migrations/env.py for asyncpg using async_engine_from_config and run_async_migrations() pattern"
+  - "Write run.py development entry point: uvicorn.run('my_app:create_app', factory=True, reload=True, port=5000)"
+  - "Write .env.example with every Settings field and sensible development defaults"
+  - "Add .gitignore entries: .env, __pycache__, *.pyc, .venv, site-packages, *.egg-info"
+
+constraints:
+  - "No module-level FastAPI() instance anywhere — create_app() is the only entry point"
+  - "All startup logic (DB engine, Redis connection) lives inside the lifespan context manager, not at import time"
+  - "database_url must always use the asyncpg driver prefix: postgresql+asyncpg://"
+  - "DomainError and its subclasses are the only error types that cross layer boundaries — SQLAlchemyError and KeyError must never reach the router"
+  - "No Flask imports anywhere — this is a FastAPI codebase"
+  - "models/__init__.py must import every model table module so Alembic target_metadata is complete"
+  - "migrations/env.py must use run_async_migrations() — standard synchronous Alembic env.py does not work with asyncpg"
+
+output_requirements:
+  - "my_app/__init__.py — create_app() with lifespan, middleware, and router registration"
+  - "config.py — Settings class (pydantic-settings) with all required fields"
+  - "models/database.py — async engine, session factory, get_db() dependency"
+  - "models/base/base.py — DeclarativeBase"
+  - "models/__init__.py — imports all model modules (initially empty, grows with each phase)"
+  - "errors/base.py, errors/not_found.py, errors/permissions.py, errors/validation.py"
+  - "routers/api_v1/__init__.py — register_v1_routers()"
+  - "routers/api_v1/health.py — health check endpoint"
+  - "routers/http/response.py — build_ok() / build_err()"
+  - "migrations/ — Alembic initialised with asyncpg-compatible env.py"
+  - "run.py — development entry point"
+  - ".env.example — all config fields with defaults"
+
+definition_of_done:
+  - "uvicorn 'my_app:create_app' --factory --reload starts without import errors"
+  - "GET /health returns {status: ok, services: {db: ok, redis: ok}} when both are reachable"
+  - "GET /health returns HTTP 503 and a degraded status when DB or Redis is unavailable"
+  - "alembic current runs without error (may show 'No current revision' on a fresh DB — that is correct)"
+  - "A missing required production config key raises RuntimeError before the server accepts any connections"
+  - "grep -r 'from flask' . returns no results"

@@ -1,0 +1,73 @@
+phase: 3
+id: bootstrap_03_service_layer
+name: "Phase 3 — Service Layer"
+description: >
+  ServiceContext, StatusOutcome, run_service(), WorkContext, identity resolution,
+  serialization standard, and the command/query directory scaffolding. This phase
+  establishes the patterns every feature command and query will follow.
+depends_on: [1, 2]
+
+contracts:
+  - id: "04"
+    file: 04_context.md
+    reason: ServiceContext — the object that carries identity and incoming data through every operation
+  - id: "06"
+    file: 06_commands.md
+    reason: Write operation structure, transaction boundaries, event emission pattern
+  - id: "07"
+    file: 07_queries.md
+    reason: Read operation structure, cursor pagination, serialization rules
+  - id: "08"
+    file: 08_domain.md
+    reason: Pure domain logic layer — guards, state machines, calculations; no I/O
+  - id: "38"
+    file: 38_identity_resolution.md
+    reason: Resolving client_id to internal id safely with workspace and soft-delete filtering
+  - id: "39"
+    file: 39_work_context.md
+    reason: WorkContext for complex writes — touched entities, cascading changes, response assembly
+  - id: "46"
+    file: 46_serialization.md
+    reason: Serialization standard — typed dataclass instances, domain serializer modules, named views
+
+enums: []
+
+implementation_steps:
+  - "Implement ServiceContext in services/context.py: identity dict (JWT claims), incoming_data dict, session (AsyncSession) — no business flags, no config"
+  - "Implement StatusOutcome in services/outcome.py: success bool, data dict | None, error DomainError | None"
+  - "Implement run_service() in services/run_service.py: calls the service function, catches DomainError and returns StatusOutcome, logs unexpected exceptions with traceback"
+  - "Implement WorkContext in services/work_context.py: touched_entities list, emitted_events list, warnings list — used by complex commands with cascading writes"
+  - "Implement resolve_by_client_id() in services/infra/identity.py: takes session + model class + client_id, raises NotFound if missing, supports workspace_id filter and is_deleted filter"
+  - "Scaffold services/commands/ and services/queries/ directory structure with __init__.py files and a README comment on the naming convention"
+  - "Scaffold domain/ directory — each domain gets its own subdirectory; pure Python only, no ORM or I/O imports"
+  - "Implement serialization base pattern from 46_serialization.md: services return typed dataclass instances, domain serializer modules own named views (compact, full, flat)"
+  - "Write a minimal example command and query for the User domain to verify all layers wire together end-to-end"
+
+constraints:
+  - "ServiceContext carries identity and incoming data only — never add boolean flags or config values to it"
+  - "WorkContext carries operation-local state for complex commands — not passed between requests"
+  - "Commands own all writes, events, and side effects — no command calls another command directly"
+  - "Queries own zero writes — a function that reads must not mutate"
+  - "Domain functions are pure Python — no ORM, no HTTP, no I/O of any kind"
+  - "Every public function has a return type annotation — no exceptions"
+  - "run_service() is the single error boundary — callers never catch DomainError directly"
+  - "resolve_by_client_id() always applies workspace_id scoping and is_deleted filtering unless explicitly bypassed with documented justification"
+
+output_requirements:
+  - "services/context.py — ServiceContext dataclass"
+  - "services/outcome.py — StatusOutcome dataclass"
+  - "services/run_service.py — run_service() function with error boundary and logging"
+  - "services/work_context.py — WorkContext dataclass"
+  - "services/infra/identity.py — resolve_by_client_id() and resolve_user_id()"
+  - "services/commands/ — directory scaffold"
+  - "services/queries/ — directory scaffold"
+  - "domain/ — directory scaffold"
+  - "services/infra/serializers/ — base serialization pattern (or domain-level per 46_serialization.md)"
+
+definition_of_done:
+  - "A minimal create_user command completes: validates input, writes to DB, returns serialized dict — without errors"
+  - "A minimal get_user query completes: resolves by client_id, applies workspace scope, returns serialized dict"
+  - "A command that raises DomainError is caught by run_service() and returned as StatusOutcome(success=False)"
+  - "An unexpected exception in a command is caught by run_service(), logged with traceback, and returned as a generic DomainError — not propagated to the router"
+  - "resolve_by_client_id() raises NotFound when the entity does not exist or belongs to a different workspace"
+  - "WorkContext accumulates touched entities across a multi-step command and all are present in the response"

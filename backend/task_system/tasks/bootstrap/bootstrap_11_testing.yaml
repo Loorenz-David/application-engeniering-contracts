@@ -1,0 +1,37 @@
+phase: 11
+id: bootstrap_11_testing
+name: "Phase 11 — Testing"
+description: >
+  Deterministic async-safe testing infrastructure with isolated DB/Redis runtime,
+  pytest config, fixture scaffolding, factory scaffolding, and CI-ready make targets.
+depends_on: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+
+contracts:
+  - id: "15"
+    file: 15_testing.md
+    reason: Unit, integration, and system testing structure
+
+enums: []
+
+implementation_steps:
+  - "Generate tests/unit, tests/integration, tests/e2e, tests/fixtures, tests/factories, tests/helpers"
+  - "Generate pytest.ini and async fixture scaffolding"
+  - "Add DB rollback fixture and Redis isolation fixture patterns"
+  - "Add sample unit/integration/e2e smoke tests"
+  - "Add test make targets for unit, integration, e2e, and aggregate test runs"
+
+constraints:
+  - "Tests must be deterministic and isolated"
+  - "Fixtures must be async-safe and reusable"
+  - "Container-aware execution must be supported"
+
+output_requirements:
+  - "pytest.ini"
+  - "tests/conftest.py"
+  - "tests/helpers/test_settings.py"
+  - "Makefile test targets"
+
+definition_of_done:
+  - "pytest runs unit and integration suites without shared state leakage"
+  - "Redis test keys are isolated and cleaned up"
+  - "Make targets exist for test, test-unit, test-integration, test-e2e"

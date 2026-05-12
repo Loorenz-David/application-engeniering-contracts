@@ -1,0 +1,40 @@
+phase: 14
+id: bootstrap_14_replayability
+name: "Phase 14 — Replayability"
+description: >
+  Operational replay infrastructure for failed jobs/events/webhooks with
+  replay-safe execution helpers, metadata envelopes, and deterministic replay logs.
+depends_on: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
+
+contracts:
+  - id: "11"
+    file: 11_infra_events.md
+    reason: Event replay safety and deterministic event handling
+  - id: "16"
+    file: 16_background_jobs.md
+    reason: Retry/replay execution safety and idempotency
+
+enums: []
+
+implementation_steps:
+  - "Generate app/replay and app/event_store scaffolding"
+  - "Add replay metadata and replay envelope interfaces"
+  - "Add replay-safe execution helpers with structured replay logging"
+  - "Add replay CLI hooks for events, jobs, and webhooks"
+
+constraints:
+  - "Do not implement full event sourcing"
+  - "Replay flows must be idempotent and deterministic"
+  - "Replay operations must emit traceable logs"
+
+output_requirements:
+  - "app/replay/interfaces.py"
+  - "app/replay/metadata.py"
+  - "app/replay/safety.py"
+  - "app/event_store/interfaces.py"
+  - "scripts/replay.py"
+
+definition_of_done:
+  - "Replay CLI hooks run in dry-run mode"
+  - "Replay helpers emit structured success/failure logs"
+  - "Replay metadata contains traceable replay identifiers"

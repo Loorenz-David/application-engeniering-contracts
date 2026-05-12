@@ -1,0 +1,45 @@
+phase: 10
+id: bootstrap_10_observability
+name: "Phase 10 — Observability"
+description: >
+  Structured machine-readable logging, request context propagation,
+  correlation/request/execution IDs, request timing, error middleware, and
+  startup/shutdown health diagnostics.
+depends_on: [1, 2, 3, 4, 5, 6, 7, 8, 9]
+
+contracts:
+  - id: "17"
+    file: 17_logging.md
+    reason: Structured logging policy and operational diagnostics
+  - id: "31"
+    file: 31_health_observability.md
+    reason: Health/readiness instrumentation and runtime diagnostics
+
+enums: []
+
+implementation_steps:
+  - "Generate app/core/logging and app/core/observability package structure"
+  - "Implement JSON formatter with deterministic machine-readable fields"
+  - "Implement correlation/request/execution/worker ID context utilities"
+  - "Implement request timing and error logging middleware"
+  - "Log startup, shutdown, and runtime health diagnostics"
+  - "Patch app factory to configure logging and context middleware"
+
+constraints:
+  - "All logs must be machine-readable JSON"
+  - "No print() usage for operational logging"
+  - "Context IDs must propagate through request and worker paths"
+  - "Observability must stay deterministic and replay-traceable"
+
+output_requirements:
+  - "app/core/logging/config.py"
+  - "app/core/logging/formatter.py"
+  - "app/core/logging/context.py"
+  - "app/core/logging/middleware.py"
+  - "app/core/observability/runtime.py"
+
+definition_of_done:
+  - "HTTP requests emit structured timing logs"
+  - "Unhandled request exceptions emit structured error logs"
+  - "Startup and shutdown events are logged"
+  - "Health endpoint logs DB/Redis status diagnostics"

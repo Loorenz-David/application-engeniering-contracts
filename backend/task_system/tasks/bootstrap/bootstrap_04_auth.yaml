@@ -1,0 +1,100 @@
+phase: 5
+id: bootstrap_05_auth
+name: "Phase 5 — Auth, RBAC & Multi-Tenancy"
+description: >
+  JWT sign-in/refresh/logout, PyJWT dependencies, workspace model, RBAC role and
+  permission system, BackendPermissionMiddleware, and the workspace membership join
+  flow. Every domain entity will carry workspace_id after this phase.
+depends_on: [1, 2, 3, 4]
+
+contracts:
+  - id: "10"
+    file: 10_auth.md
+    reason: JWT strategy with PyJWT, get_jwt_claims() dependency, require_roles(), token blocklisting via Redis
+  - id: "24"
+    file: 24_multi_tenancy.md
+    reason: Workspace architecture, membership model, JWT session with workspace context, workspace switching
+  - id: "28"
+    file: 28_roles_permissions.md
+    reason: RBAC two-layer model, Permission enum, BackendPermissionMiddleware, require_permission pattern
+
+enums:
+  - name: RoleNameEnum
+    location: domain/roles/enums.py
+    scope: essential
+    description: >
+      Base role names baked into the JWT as role_name and checked by require_roles().
+      These three values seed the base_roles table and are referenced throughout the
+      permission system. Do not remove or rename them.
+    essential_values:
+      - ADMIN
+      - MEMBER
+      - FIELD
+    expandable_note: >
+      Add new base roles here only if the application requires a fundamentally
+      different access tier. Prefer adding permissions to existing roles over
+      creating new role tiers. Each new role requires a base_roles seed entry and
+      a corresponding Alembic migration.
+
+  - name: Permission
+    location: domain/roles/permissions.py
+    scope: expandable
+    description: >
+      HTTP method + path patterns embedded in the JWT as backend_permissions and
+      checked by BackendPermissionMiddleware. No hardcoded essential values — all
+      permissions are defined per application. Format: "METHOD:/api/v1/path/".
+    essential_values: []
+    expandable_note: >
+      Define one Permission entry per protected endpoint. Add new permissions when
+      you add new routes. After adding permissions, re-issue tokens or flush the
+      blocklist so users pick up updated claims on their next login.
+
+implementation_steps:
+  - "Write Role and WorkspaceRole models in models/tables/roles/ — base_roles table with id + name, workspace_roles linking workspace to role with extra claims"
+  - "Write Workspace model in models/tables/workspaces/workspace.py — client_id, name, time_zone, created_by_id"
+  - "Write WorkspaceMembership model in models/tables/workspaces/workspace_membership.py — user_id FK, workspace_id FK, workspace_role_id FK"
+  - "Write Alembic migration for all auth and workspace tables; include base_roles seed (ADMIN=1, MEMBER=2, FIELD=3) using ON CONFLICT DO NOTHING"
+  - "Implement RoleNameEnum in domain/roles/enums.py — ADMIN, MEMBER, FIELD"
+  - "Implement Permission constants in domain/roles/permissions.py — format: 'METHOD:/api/v1/path/'"
+  - "Implement resolve_permissions_for_role() in domain/roles/permissions.py — walks UIGroupPermissions and BackendGroupPermissions chains and returns {backend: [...], ui: {...}}"
+  - "Implement sign_in_user command in services/commands/auth/sign_in_user.py — verify password, resolve workspace membership, call build_auth_response()"
+  - "Implement build_auth_response() — encodes JWT access and refresh tokens using PyJWT with all required claims"
+  - "Implement logout_user command — blocklists both access and refresh token JTIs in Redis with TTL"
+  - "Implement refresh_token command — validates refresh token, issues new access token"
+  - "Implement get_jwt_claims() FastAPI dependency in routers/utils/jwt_dep.py — validates Bearer token, checks Redis blocklist, returns decoded claims"
+  - "Implement require_roles() dependency factory in routers/utils/jwt_dep.py"
+  - "Implement require_app_scope() dependency factory in routers/utils/jwt_dep.py"
+  - "Implement BackendPermissionMiddleware in routers/middleware/backend_permission.py — decodes JWT, normalizes path, checks backend_permissions claim"
+  - "Register BackendPermissionMiddleware in create_app() via app.add_middleware()"
+  - "Wire auth router: POST /auth/sign-in, POST /auth/logout, POST /auth/refresh — set refresh token as httpOnly cookie"
+
+constraints:
+  - "JWT secret is settings.jwt_secret_key — never hardcoded or shared between applications"
+  - "No DB lookup per request — JWT claims are the source of truth for identity and permissions on authenticated requests"
+  - "Both access and refresh tokens must be blocklisted on logout — partial blocklisting is a security bug"
+  - "Blocklist TTL must be at least (token.exp - now) + 60 seconds — never set a shorter TTL"
+  - "Redis unavailability during blocklist check must fail closed — do not allow tokens through when Redis is unreachable"
+  - "Refresh token is stored only as an httpOnly cookie — never in the JSON response body"
+  - "password column is never returned in any query or API response"
+  - "workspace_id is mandatory on every domain model and every query from this phase forward"
+  - "import jwt (PyJWT) — never import from jose or flask_jwt_extended"
+
+output_requirements:
+  - "models/tables/roles/ — Role, WorkspaceRole models"
+  - "models/tables/workspaces/ — Workspace, WorkspaceMembership models"
+  - "domain/roles/enums.py — RoleNameEnum"
+  - "domain/roles/permissions.py — Permission constants + resolve_permissions_for_role()"
+  - "services/commands/auth/ — sign_in_user, logout_user, refresh_token"
+  - "routers/utils/jwt_dep.py — get_jwt_claims(), require_roles(), require_app_scope()"
+  - "routers/middleware/backend_permission.py — BackendPermissionMiddleware"
+  - "routers/api_v1/auth.py — auth router"
+  - "migrations/versions/<rev>_create_auth_and_workspace_tables.py — applied"
+
+definition_of_done:
+  - "POST /auth/sign-in with valid credentials returns access_token and sets refresh_token httpOnly cookie"
+  - "A protected route with Depends(require_roles([ADMIN])) returns 403 when called with a MEMBER token"
+  - "POST /auth/logout blocklists both tokens — a subsequent request with the old access token returns 401"
+  - "BackendPermissionMiddleware returns 403 for a route not in the caller's backend_permissions claim"
+  - "A request with an expired token returns 401"
+  - "A request with a blocklisted token returns 401 even if the token has not expired yet"
+  - "workspace_id is present in every JWT claim and accessible via ctx.workspace_id"

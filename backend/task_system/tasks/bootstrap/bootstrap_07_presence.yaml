@@ -1,0 +1,70 @@
+phase: 8
+id: bootstrap_08_presence
+name: "Phase 8 — Presence System"
+description: >
+  EntityType enum, two-layer presence (Redis for real-time exclusion + UserAppViewRecord
+  for history), socket view_entity / leave_entity handlers, and the RECORD_VIEW_START /
+  RECORD_VIEW_END background task handlers. After this phase, the notification system
+  can exclude users who are already viewing the relevant entity.
+depends_on: [1, 2, 3, 4, 5, 6, 7]
+
+contracts:
+  - id: "48"
+    file: 48_presence.md
+    reason: EntityType enum, Redis two-layer presence, RECORD_VIEW_START / RECORD_VIEW_END task handlers, socket integration
+
+enums:
+  - name: EntityType
+    location: domain/presence/enums.py
+    scope: mixed
+    description: >
+      Canonical source for all entity type strings across the socket protocol, Redis
+      presence keys, UserAppViewRecord rows, and notification exclusion payloads.
+      ESSENTIAL values are in use by the foundational case app. Never pass raw entity
+      type strings anywhere in the codebase — always import from this enum.
+    essential_values:
+      - case_list         # List-page view; entity_client_id = workspace_client_id
+      - case              # Single case view
+      - conversation_list # List-page view; entity_client_id = workspace_client_id
+      - conversation      # Single conversation view
+    expandable_note: >
+      Add a new value here when a new domain gains presence support (e.g. a new
+      entity type that needs notification exclusion). The list-page convention applies:
+      list views use the workspace client_id as entity_client_id. Never add speculative
+      values — only add when the socket handler branch is also being implemented.
+
+implementation_steps:
+  - "Implement EntityType enum in domain/presence/enums.py — four essential values as a str enum"
+  - "Implement presence service in services/infra/presence/presence.py: mark_viewing(entity_type, entity_client_id, user_id), mark_left(...), get_viewers(entity_type, entity_client_id) — all backed by Redis SETs with TTL"
+  - "Implement Redis key pattern for presence: {prefix}:presence:{entity_type}:{entity_client_id} → SET of user_ids"
+  - "Update _handle_view_entity socket handler: validate entity_type via EntityType enum (ValueError → silent return), call presence.mark_viewing() inline, enqueue RECORD_VIEW_START task, branch on EntityType.CONVERSATION to join conversation room"
+  - "Update _handle_leave_entity socket handler: validate entity_type, call presence.mark_left() inline, enqueue RECORD_VIEW_END task, branch on EntityType.CONVERSATION to leave conversation room"
+  - "Update _cleanup_presence disconnect handler: iterate ConnectionMeta.entity_views, call mark_left() and enqueue RECORD_VIEW_END for each"
+  - "Implement RECORD_VIEW_START handler in services/tasks/presence/record_view_start.py: resolve user_client_id → internal user_id, create UserAppViewRecord row, update user.last_app_view_record_id in the same transaction"
+  - "Implement RECORD_VIEW_END handler in services/tasks/presence/record_view_end.py: find latest open UserAppViewRecord for (user_id, entity_type, entity_client_id), set ended_at — idempotent if no open record found"
+  - "Register RECORD_VIEW_START and RECORD_VIEW_END handlers in TASK_REGISTRY (replacing the stubs from Phase 6)"
+
+constraints:
+  - "EntityType is the only valid source for entity type strings — import EntityType, use EntityType.CASE.value; never pass raw strings"
+  - "Redis writes (mark_viewing / mark_left) are inline in the socket handler — they must not be moved to a background task"
+  - "DB writes (UserAppViewRecord) are always background tasks — the socket handler must not write to UserAppViewRecord synchronously"
+  - "RECORD_VIEW_END is idempotent — multiple disconnect signals for the same entity must not create duplicate writes"
+  - "Multi-tab concurrent views are valid — multiple open UserAppViewRecord rows for the same user + entity are allowed; RECORD_VIEW_END closes the latest"
+  - "List-page views (case_list, conversation_list) use the workspace client_id as entity_client_id — there is no single-entity id for list pages"
+  - "app_viewing does not exist on User — do not add any currently_viewing column to User; real-time state lives in Redis and ConnectionMeta"
+
+output_requirements:
+  - "domain/presence/enums.py — EntityType"
+  - "services/infra/presence/presence.py — mark_viewing(), mark_left(), get_viewers()"
+  - "services/tasks/presence/record_view_start.py — RECORD_VIEW_START handler"
+  - "services/tasks/presence/record_view_end.py — RECORD_VIEW_END handler"
+  - "sockets/handlers.py — updated _handle_view_entity, _handle_leave_entity, _cleanup_presence"
+
+definition_of_done:
+  - "A client sending view_entity {entity_type: 'case', entity_client_id: 'cas_01...'} results in the user appearing in get_viewers('case', 'cas_01...')"
+  - "A client sending leave_entity removes the user from get_viewers"
+  - "A client disconnect removes the user from all entity presence sets and enqueues RECORD_VIEW_END for each tracked view"
+  - "RECORD_VIEW_START creates a UserAppViewRecord row and updates user.last_app_view_record_id"
+  - "RECORD_VIEW_END sets ended_at on the latest open record — running it twice produces no duplicate writes"
+  - "An unknown entity_type in view_entity is silently ignored — no error, no Redis write"
+  - "get_viewers() correctly excludes users who have left or disconnected"

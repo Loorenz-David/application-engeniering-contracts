@@ -1,0 +1,65 @@
+phase: 6
+id: bootstrap_06_realtime
+name: "Phase 6 — Real-Time Infrastructure"
+description: >
+  Event bus with outbox pattern, Redis connection layer, Socket.IO ASGI integration,
+  ConnectionManager with user and entity rooms, and socket authentication via JWT
+  query param. After this phase, commands can emit events and push real-time updates
+  to connected clients.
+depends_on: [1, 2, 3, 4, 5]
+
+contracts:
+  - id: "11"
+    file: 11_infra_events.md
+    reason: Event bus, outbox pattern, batch events, schema versioning, dead letters
+  - id: "12"
+    file: 12_infra_redis.md
+    reason: Redis connection, key conventions, TTL rules, key prefix discipline
+  - id: "13"
+    file: 13_sockets.md
+    reason: Socket.IO ASGI integration, ConnectionManager, user rooms, entity rooms, socket authentication
+
+enums: []
+
+implementation_steps:
+  - "Implement Redis connection layer in services/infra/redis/: get_redis_client(), assert_redis_available(), key helper using settings.redis_key_prefix"
+  - "Add Redis initialisation to the lifespan context manager in create_app() — verify connectivity on startup"
+  - "Implement the event bus in services/infra/events/: EventBus class, emit(), outbox row creation (Event model or outbox table), batch emit support"
+  - "Implement event builders in services/infra/events/builders/ — one builder per domain event type, payload always uses client_id not internal id"
+  - "Implement event handlers in services/infra/events/handlers/ — handler functions receive the event payload, execute side effects (socket push, background task enqueue)"
+  - "Implement event registry in services/infra/events/registry/ — maps event type strings to handler functions; loaded at startup"
+  - "Implement Socket.IO server in ASGI mode: sio = socketio.AsyncServer(async_mode='asgi', cors_allowed_origins=settings.frontend_origins)"
+  - "Mount Socket.IO ASGI app: socket_app = socketio.ASGIApp(sio, other_asgi_app=app) — used as the final ASGI app in run.py and uvicorn"
+  - "Implement ConnectionMeta dataclass: user_id, workspace_id, username, connected_at, entity_views (set)"
+  - "Implement ConnectionManager in sockets/manager.py: connect(), disconnect(), join_conversation(), leave_conversation(), send_to_user(), broadcast_to_room()"
+  - "Implement socket authentication in sockets/handlers.py: validate JWT token query param on connect using get_jwt_claims logic; reject invalid tokens"
+  - "Implement socket event handlers: connect, disconnect, view_entity, leave_entity"
+  - "Register all socket handlers via sio.on() in sockets/register.py"
+  - "Wire _register_websocket_handlers(app) in create_app() to mount the socket ASGI app"
+
+constraints:
+  - "All socket event names use domain:verb format with a colon separator — e.g. case:updated, conversation:message-added"
+  - "Event payloads always use client_id, never internal database id"
+  - "Socket authentication uses a token query param on connect — the only place tokens are accepted outside the Authorization header"
+  - "Events must be emitted after commit, never inside the transaction — use the outbox pattern for reliability"
+  - "Batch operations emit one batch event with all affected client_ids, not N individual events"
+  - "Every Redis key must use the settings.redis_key_prefix namespace — no bare keys"
+  - "Redis key TTLs are always explicit — no keys without expiry except stable reference data"
+
+output_requirements:
+  - "services/infra/redis/ — get_redis_client(), assert_redis_available(), key helper"
+  - "services/infra/events/builders/ — event builder scaffold"
+  - "services/infra/events/handlers/ — handler scaffold"
+  - "services/infra/events/registry/ — event type → handler mapping"
+  - "sockets/manager.py — ConnectionManager + ConnectionMeta"
+  - "sockets/handlers.py — connect, disconnect, view_entity, leave_entity handlers"
+  - "sockets/register.py — sio.on() registrations"
+  - "my_app/__init__.py — updated to mount Socket.IO ASGI app"
+
+definition_of_done:
+  - "A client can connect to the socket with a valid JWT token query param and receive a successful connect event"
+  - "A client with an invalid or missing token is rejected on connect with a 401-equivalent error"
+  - "send_to_user() delivers a socket event to all connections belonging to a specific user_id"
+  - "An event emitted by a command reaches a connected client within 500ms of the commit"
+  - "A disconnected client's user_id is removed from all rooms"
+  - "All Redis keys use the settings.redis_key_prefix namespace — no bare keys exist in the keyspace"

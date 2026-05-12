@@ -1,0 +1,43 @@
+phase: 12
+id: bootstrap_12_worker_runtime
+name: "Phase 12 — Worker Runtime"
+description: >
+  Foundational queue and worker runtime with explicit task registration,
+  deterministic retry metadata, dead-letter hooks, worker health checks,
+  and operational worker commands.
+depends_on: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+
+contracts:
+  - id: "16"
+    file: 16_background_jobs.md
+    reason: Queue runtime, retries, handler registration, idempotent execution
+  - id: "12"
+    file: 12_infra_redis.md
+    reason: Redis-backed queue runtime behavior
+
+enums: []
+
+implementation_steps:
+  - "Generate app/workers, app/queues, app/tasks scaffolding"
+  - "Add explicit queue registry and worker runtime entrypoint"
+  - "Add retry metadata and dead-letter hooks"
+  - "Add worker context logging and worker health check script"
+  - "Add worker make targets and docker profile compatibility"
+
+constraints:
+  - "No distributed orchestration layer"
+  - "Task registration remains explicit, no auto-discovery magic"
+  - "Retries and failures must be observable and replay-safe"
+
+output_requirements:
+  - "app/workers/runtime.py"
+  - "app/workers/retry.py"
+  - "app/workers/dead_letter.py"
+  - "app/queues/runtime.py"
+  - "scripts/worker.py"
+  - "scripts/worker_healthcheck.py"
+
+definition_of_done:
+  - "Worker can start from generated entrypoint"
+  - "Worker healthcheck returns non-zero on Redis failure"
+  - "Make targets exist for worker, worker-dev, worker-logs"

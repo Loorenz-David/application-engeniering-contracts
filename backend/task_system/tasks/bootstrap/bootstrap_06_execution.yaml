@@ -1,0 +1,91 @@
+phase: 7
+id: bootstrap_07_execution
+name: "Phase 7 — Background Execution"
+description: >
+  RQ task queue, task factory, task registry, task handler pattern, and the Event
+  mixin for operation lifecycle tracking. After this phase, commands can enqueue
+  durable background tasks that survive process restarts.
+depends_on: [1, 2, 3, 4, 5, 6]
+
+contracts:
+  - id: "16"
+    file: 16_background_jobs.md
+    reason: RQ workers, queues, retry policies, task registry, idempotency
+  - id: "42"
+    file: 42_event.md
+    reason: Event mixin — operation lifecycle tracking, EventStateEnum, worker flow integration
+
+enums:
+  - name: TaskType
+    location: domain/execution/enums.py
+    scope: mixed
+    description: >
+      Canonical registry of all background task types. ESSENTIAL values are required
+      for core system internals (presence, notifications, signals) — removing them
+      breaks fundamental features. EXPANDABLE values are added as the application
+      grows. Every TaskType value must have a registered handler in the task registry.
+    essential_values:
+      - RECORD_VIEW_START       # Queued by the socket view_entity handler — writes UserAppViewRecord
+      - RECORD_VIEW_END         # Queued by socket leave_entity / disconnect — sets ended_at
+      - CREATE_NOTIFICATIONS    # Queued by commands after writes — resolves targets, dispatches
+      - SEND_PUSH_NOTIFICATION  # Queued by CREATE_NOTIFICATIONS — delivers a single VAPID push
+      - PUSH_USER_SIGNAL        # Queued by logout and presence — delivers a socket signal to a user
+    expandable_note: >
+      Add new task types here as you build new background operations. Each new value
+      requires: (1) an entry in this enum, (2) a handler function in services/tasks/,
+      (3) registration in the task registry. Never pass raw task type strings to
+      create_instant_task() — always import from this enum.
+
+  - name: EventStateEnum
+    location: domain/execution/enums.py
+    scope: essential
+    description: >
+      Lifecycle states for the Event mixin — used to track whether an operation's
+      async work (post-processing, image analysis, sync) is pending, running, done,
+      or failed. Required by the Event mixin on any model that has async post-processing.
+    essential_values:
+      - PENDING
+      - RUNNING
+      - DONE
+      - FAILED
+    expandable_note: >
+      Do not add states to this enum. The four states are exhaustive for any
+      async operation lifecycle. If you need sub-states, use a separate column
+      on the domain model.
+
+implementation_steps:
+  - "Implement EventStateEnum and TaskType in domain/execution/enums.py"
+  - "Implement Event mixin in models/base/event.py: state (EventStateEnum), event_data (JSON), worker_started_at, worker_completed_at, worker_error"
+  - "Implement task registry in services/infra/execution/registry.py: TASK_REGISTRY dict mapping TaskType → async handler function"
+  - "Implement task factory in services/infra/execution/task_factory.py: create_instant_task(task_type, payload) — enqueues to RQ default queue"
+  - "Implement the RQ worker entrypoint and queue configuration — connect to Redis using settings.redis_uri"
+  - "Implement the generic task dispatcher that the RQ worker calls: looks up handler in TASK_REGISTRY, calls it with raw payload dict"
+  - "Implement DB session helper for task handlers in services/infra/execution/db.py: get_db_session() async context manager"
+  - "Implement the five essential task handlers (stubs that will be filled in later phases): RECORD_VIEW_START, RECORD_VIEW_END, CREATE_NOTIFICATIONS, SEND_PUSH_NOTIFICATION, PUSH_USER_SIGNAL"
+  - "Register all five essential handlers in TASK_REGISTRY"
+  - "Write a smoke-test task (e.g. TaskType.NOOP if needed for testing) to verify end-to-end queue → worker → handler flow"
+
+constraints:
+  - "Never pass raw task type strings to create_instant_task() — always use TaskType enum values"
+  - "Every TaskType value must have a registered handler in TASK_REGISTRY — unknown task types must fail loudly, not silently"
+  - "Task handlers receive a raw dict payload — they are responsible for type validation before any DB write"
+  - "Task handlers must be idempotent — the same payload delivered twice must produce the same DB state"
+  - "user_id in task payloads is always user.client_id (the JWT claim value) — handlers resolve to internal id via resolve_user_id()"
+  - "DB writes in task handlers use get_db_session(), not the request-scoped get_db() dependency"
+  - "create_instant_task() enqueues after the calling command commits — never inside the transaction"
+
+output_requirements:
+  - "domain/execution/enums.py — TaskType and EventStateEnum"
+  - "models/base/event.py — Event mixin"
+  - "services/infra/execution/registry.py — TASK_REGISTRY"
+  - "services/infra/execution/task_factory.py — create_instant_task()"
+  - "services/infra/execution/db.py — get_db_session() async context manager"
+  - "services/tasks/ — stub handler files for all five essential TaskType values"
+  - "Worker entrypoint script (e.g. worker.py or scripts/run_worker.py)"
+
+definition_of_done:
+  - "create_instant_task(TaskType.PUSH_USER_SIGNAL, payload) enqueues a job without errors"
+  - "The RQ worker picks up the job and calls the registered handler"
+  - "An unregistered TaskType raises a clear error in the dispatcher — not a silent no-op"
+  - "A task handler that raises an exception does not crash the worker process — the job enters the failed queue"
+  - "The same task payload delivered twice to an idempotent handler produces the same DB state as delivering it once"

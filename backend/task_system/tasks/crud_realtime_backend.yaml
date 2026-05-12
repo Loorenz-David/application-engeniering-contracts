@@ -1,0 +1,43 @@
+id: crud_realtime_backend
+name: CRUD + Realtime Backend
+
+intent_patterns:
+  - crud
+  - realtime
+  - live updates
+  - websocket
+  - socket
+  - new domain
+  - create entity
+
+contracts:
+  - id: "03"
+    file: 03_models.md
+    reason: Model schema and migration-safe table definitions
+  - id: "08"
+    file: 08_domain.md
+    reason: Domain rules and transition logic
+  - id: "11"
+    file: 11_infra_events.md
+    reason: Durable event handling and outbox flow
+  - id: "13"
+    file: 13_sockets.md
+    reason: Realtime push contract
+  - id: "30"
+    file: 30_migrations.md
+    reason: Migration safety and rollout rules
+  - id: "15"
+    file: 15_testing.md
+    reason: Backend test architecture baseline
+
+implementation_steps:
+  - Define model + migration
+  - Implement commands and queries
+  - Emit domain events after writes
+  - Register socket push handlers
+  - Add unit and integration coverage
+
+constraints:
+  - Commands own writes and side effects
+  - Queries remain read-only
+  - Event payloads use client_id

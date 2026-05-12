@@ -1,0 +1,37 @@
+id: ci_validated_runtime
+name: CI-validated Runtime
+
+intent_patterns:
+  - ci
+  - pipeline
+  - readiness
+  - runtime validation
+  - deploy parity
+
+contracts:
+  - id: "54"
+    file: 54_ci_cd_runtime.md
+    reason: Deterministic CI validation order
+  - id: "33"
+    file: 33_deployment.md
+    reason: Deployment parity and rollback posture
+  - id: "31"
+    file: 31_health_observability.md
+    reason: Health/readiness gate requirements
+  - id: "30"
+    file: 30_migrations.md
+    reason: Migration gate and startup safety
+  - id: "49"
+    file: 49_observability_runtime.md
+    reason: Machine-readable diagnostics in CI failures
+
+implementation_steps:
+  - Add ordered CI validation gates
+  - Validate migrations before app startup checks
+  - Enforce health/readiness gate failures
+  - Ensure CI logs are structured and diagnosable
+
+constraints:
+  - CI must fail loud on readiness failure
+  - No hidden host dependency assumptions
+  - Migration checks are required in mainline pipeline

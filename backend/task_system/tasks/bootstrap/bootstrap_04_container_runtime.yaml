@@ -1,0 +1,57 @@
+phase: 4
+id: bootstrap_04_container_runtime
+name: "Phase 4 — Container Runtime"
+description: >
+  Formal container runtime contract for the modular-monolith: Dockerfile,
+  docker-compose, .dockerignore, Makefile workflows, and deterministic runtime
+  assumptions across local development, validation, and CI.
+depends_on: [1, 2, 3]
+
+contracts:
+  - id: "02"
+    file: 02_app_factory.md
+    reason: App startup/env loading rules that must remain consistent in containerized runtime
+  - id: "12"
+    file: 12_infra_redis.md
+    reason: Redis connection and key prefix behavior across local/validation/CI containers
+  - id: "16"
+    file: 16_background_jobs.md
+    reason: Worker execution model and queue wiring in compose runtime
+  - id: "31"
+    file: 31_health_observability.md
+    reason: Health/readiness checks and operational diagnostics
+  - id: "33"
+    file: 33_deployment.md
+    reason: Deployment/rollback contract and runtime parity principles
+
+enums: []
+
+implementation_steps:
+  - "Generate Dockerfile for backend/worker runtime using the same project codebase (modular-monolith, not microservices)"
+  - "Generate .dockerignore with deterministic build context exclusions"
+  - "Generate docker-compose.yml with postgres + redis as core infra and optional backend/worker app profile"
+  - "Add service healthchecks and deterministic startup ordering using depends_on + service_healthy"
+  - "Keep hybrid local mode first-class: make dev-up should bring up infra only; backend can run locally"
+  - "Add full containerized mode: docker compose --profile app up -d runs backend + worker + infra"
+  - "Document validation mode: dynamic ports are intentional and isolate validation from host services"
+  - "Add make targets: dev-up, dev-up-full, dev-down, dev-logs"
+
+constraints:
+  - "Keep architecture modular-monolith-first: single backend app + worker process model"
+  - "Do not introduce Kubernetes, service mesh, or distributed microservice assumptions"
+  - "Validation must be deterministic and independent of host-local postgres/redis"
+  - "Every service dependency must be explicit via environment variables and compose wiring"
+  - "Services fail loudly when dependencies are unavailable"
+
+output_requirements:
+  - "Dockerfile"
+  - ".dockerignore"
+  - "docker-compose.yml"
+  - "Makefile"
+  - "README runtime section describing hybrid/full/validation modes"
+
+definition_of_done:
+  - "make dev-up starts postgres and redis successfully"
+  - "docker compose --profile app up -d starts backend and worker with healthy infra dependencies"
+  - "make dev-down and docker compose down cleanly stop and remove runtime stack"
+  - "Validation can run with dynamic ports without colliding with host services"

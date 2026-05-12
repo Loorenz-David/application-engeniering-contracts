@@ -1,0 +1,40 @@
+phase: 15
+id: bootstrap_15_operational_cli
+name: "Phase 15 — Operational CLI"
+description: >
+  Typer-based operational command runtime for replay, inspect, backfill,
+  cleanup, seed, worker control, db reset, and diagnostics, with deterministic
+  make command surface and dry-run safety for destructive operations.
+depends_on: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
+
+contracts:
+  - id: "27"
+    file: 27_cli_scripts.md
+    reason: Operational CLI conventions, dry-run behavior, deterministic scripts
+
+enums: []
+
+implementation_steps:
+  - "Generate app/operations and app/cli scaffolding"
+  - "Implement Typer operational commands for seed, inspect, backfill, cleanup, replay, worker control, reset-db, diagnostics"
+  - "Generate scripts/ops.py entrypoint"
+  - "Standardize Makefile baseline command surface"
+  - "Generate env layering files .env.local/.env.testing/.env.validation/.env.production"
+
+constraints:
+  - "Operational CLI must stay explicit and deterministic"
+  - "Destructive commands must require confirm or support dry-run mode"
+  - "No hidden runtime auto-discovery or dependency injection"
+
+output_requirements:
+  - "app/cli/main.py"
+  - "app/operations/*.py"
+  - "scripts/ops.py"
+  - "Makefile operational baseline commands"
+  - "Environment layer files"
+
+definition_of_done:
+  - "Operational commands are executable via scripts/ops.py"
+  - "Makefile includes required baseline command set"
+  - "reset-db operation is safety-gated"
+  - "Environment layering files are generated"
