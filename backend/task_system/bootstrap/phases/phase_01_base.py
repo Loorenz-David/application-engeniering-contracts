@@ -60,9 +60,21 @@ def create_app() -> FastAPI:
     # ── config ───────────────────────────────────────────────────────────────
     _write(root / a / "config.py", f"""\
 from typing import Annotated
+import os
 
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
+
+
+def _resolve_env_file() -> str:
+    app_env = (os.getenv("APP_ENV") or "development").strip().lower()
+    if app_env == "testing":
+        return ".env.testing"
+    if app_env == "validation":
+        return ".env.validation"
+    if app_env == "production":
+        return ".env.production"
+    return ".env"
 
 
 class Settings(BaseSettings):
@@ -91,7 +103,9 @@ class Settings(BaseSettings):
     environment: str = Field(default="development", alias="ENVIRONMENT")
 
     model_config = SettingsConfigDict(
-        env_file=(".env", ".env.local", ".env.testing", ".env.validation", ".env.production"),
+        # Load deterministic env profile selected by APP_ENV.
+        # APP_ENV can be: development | testing | validation | production.
+        env_file=_resolve_env_file(),
         env_file_encoding="utf-8",
         case_sensitive=False,
         env_ignore_empty=True,
@@ -405,6 +419,10 @@ JWT_REFRESH_TOKEN_EXPIRE_DAYS=30
 
 # development | testing | production
 ENVIRONMENT=development
+
+# Optional settings profile selector used by config.py.
+# Supported values: development | testing | validation | production
+APP_ENV=development
 """, force=force)
 
     _write(root / ".env.local", f"""\
@@ -680,7 +698,7 @@ cp .env.example .env
 Run migrations after the services are healthy:
 
 ```bash
-alembic upgrade head
+APP_ENV=development alembic upgrade head
 ```
 
 Start the FastAPI app:

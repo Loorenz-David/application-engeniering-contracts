@@ -107,6 +107,14 @@ python3 resolver.py "add replay and worker retry diagnostics"
 
 Bootstrap the backend umbrella layout itself.
 
+When running generated app commands, place `APP_ENV` before the command:
+
+```bash
+APP_ENV=development alembic upgrade head
+APP_ENV=development python run.py
+APP_ENV=validation python scripts/validate_bootstrap.py
+```
+
 > **Pick one mode for your repository shape.** If `application_contracts/` lives inside your app repo, use Mode B and ignore Mode A. Mode A applies only when contracts are hosted in a separate external repo.
 
 Mode A (external canonical repo):

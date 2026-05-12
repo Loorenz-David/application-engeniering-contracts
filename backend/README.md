@@ -71,6 +71,16 @@ Generated app config uses `SettingsConfigDict(..., extra="ignore")` so runtime-o
 
 Generated app config also uses explicit `Field(..., alias="ENV_VAR")` mappings for settings keys so Pydantic v2 resolves environment variables deterministically across app runtime, Alembic, workers, and CI.
 
+Generated app config supports `APP_ENV` profile selection (`development`, `testing`, `validation`, `production`) so commands can load only the intended `.env*` profile and avoid cross-file overrides.
+
+Use `APP_ENV` as a prefix before app runtime commands:
+
+```bash
+APP_ENV=development alembic upgrade head
+APP_ENV=development python run.py
+APP_ENV=validation python scripts/validate_bootstrap.py
+```
+
 ## Fresh start workflow (including Git)
 
 Assume a fresh folder named `Manager-app` and no Git history yet.

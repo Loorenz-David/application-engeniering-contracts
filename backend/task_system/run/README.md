@@ -51,6 +51,16 @@ Note: generated `backend/app/<app_name>/config.py` sets `SettingsConfigDict(...,
 
 Generated settings also use explicit `Field(..., alias="ENV_VAR")` aliases so environment variable mapping is deterministic in Pydantic v2.
 
+Use `APP_ENV` to select one env profile when running generated apps (for example `APP_ENV=development alembic upgrade head`).
+
+Examples:
+
+```bash
+APP_ENV=development alembic upgrade head
+APP_ENV=development python run.py
+APP_ENV=validation python scripts/validate_bootstrap.py
+```
+
 Initialize backend umbrella structure in a fresh repo root:
 
 ```bash
