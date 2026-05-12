@@ -1,3 +1,4 @@
+import socket
 from pathlib import Path
 
 import typer
@@ -6,8 +7,35 @@ from bootstrap.writer import touch_file as _touch
 from bootstrap.writer import write_file as _write
 
 
+def _find_free_port(start: int, max_attempts: int = 20) -> int:
+    """Return the first TCP port >= start that is not bound on localhost."""
+    for port in range(start, start + max_attempts):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                s.bind(("127.0.0.1", port))
+                return port
+            except OSError:
+                continue
+    raise RuntimeError(
+        f"No free port found in range {start}–{start + max_attempts - 1}. "
+        "Free up a port and retry."
+    )
+
+
 def _phase1(root: Path, a: str, force: bool) -> None:
     typer.echo("\n── Phase 1 — Base Application Scaffold ──────────────────────────────")
+
+    # ── detect free ports at generation time ─────────────────────────────────
+    pg_port = _find_free_port(5432)
+    redis_port = _find_free_port(6379)
+    app_port = _find_free_port(8000)
+    if pg_port != 5432:
+        typer.echo(f"  ⚠ Port 5432 in use — using {pg_port} for postgres")
+    if redis_port != 6379:
+        typer.echo(f"  ⚠ Port 6379 in use — using {redis_port} for redis")
+    if app_port != 8000:
+        typer.echo(f"  ⚠ Port 8000 in use — using {app_port} for app server")
 
     # ── app factory ──────────────────────────────────────────────────────────
     _write(root / a / "__init__.py", f"""\
@@ -353,6 +381,9 @@ import uvicorn
 import asyncio
 import os
 
+from dotenv import load_dotenv
+load_dotenv()  # Load .env before reading PORT or any other env var
+
 from scripts.wait_for_services import wait_for_services
 
 if __name__ == "__main__":
@@ -361,7 +392,7 @@ if __name__ == "__main__":
         "{a}:create_app",
         factory=True,
         host="0.0.0.0",
-        port=int(os.getenv("PORT", "5000")),
+        port=int(os.getenv("PORT", "{app_port}")),
         reload=os.getenv("UVICORN_RELOAD", "1") != "0",
     )
 """, force=force)
@@ -402,14 +433,17 @@ SECRET_KEY=replace-me
 JWT_SECRET_KEY=replace-me
 
 # Must use asyncpg driver.
-DATABASE_URL=postgresql+asyncpg://postgres:postgres@localhost:5432/{a}
+DATABASE_URL=postgresql+asyncpg://postgres:postgres@localhost:{pg_port}/{a}
 
-REDIS_URL=redis://localhost:6379/0
+REDIS_URL=redis://localhost:{redis_port}/0
 REDIS_KEY_PREFIX={a}
 
-# Optional Docker Compose host ports. Defaults match DATABASE_URL and REDIS_URL.
-POSTGRES_PORT=5432
-REDIS_PORT=6379
+# App server port — auto-detected free port at generation time.
+PORT={app_port}
+
+# Docker Compose host ports — auto-detected free ports at generation time.
+POSTGRES_PORT={pg_port}
+REDIS_PORT={redis_port}
 
 # Comma-separated for multiple origins
 FRONTEND_ORIGINS=http://localhost:5173
@@ -427,8 +461,8 @@ APP_ENV=development
 
     _write(root / ".env.local", f"""\
 ENVIRONMENT=development
-DATABASE_URL=postgresql+asyncpg://postgres:postgres@127.0.0.1:5432/{a}
-REDIS_URL=redis://127.0.0.1:6379/0
+DATABASE_URL=postgresql+asyncpg://postgres:postgres@127.0.0.1:{pg_port}/{a}
+REDIS_URL=redis://127.0.0.1:{redis_port}/0
 REDIS_KEY_PREFIX={a}_local
 SECRET_KEY=local-secret
 JWT_SECRET_KEY=local-jwt-secret
@@ -436,8 +470,8 @@ JWT_SECRET_KEY=local-jwt-secret
 
     _write(root / ".env.testing", f"""\
 ENVIRONMENT=testing
-DATABASE_URL=postgresql+asyncpg://postgres:postgres@127.0.0.1:5432/{a}_test
-REDIS_URL=redis://127.0.0.1:6379/1
+DATABASE_URL=postgresql+asyncpg://postgres:postgres@127.0.0.1:{pg_port}/{a}_test
+REDIS_URL=redis://127.0.0.1:6380/1
 REDIS_KEY_PREFIX={a}_test
 SECRET_KEY=testing-secret
 JWT_SECRET_KEY=testing-jwt-secret
@@ -445,8 +479,8 @@ JWT_SECRET_KEY=testing-jwt-secret
 
     _write(root / ".env.validation", f"""\
 ENVIRONMENT=validation
-DATABASE_URL=postgresql+asyncpg://postgres:postgres@127.0.0.1:5432/{a}_validation
-REDIS_URL=redis://127.0.0.1:6379/2
+DATABASE_URL=postgresql+asyncpg://postgres:postgres@127.0.0.1:{pg_port}/{a}_validation
+REDIS_URL=redis://127.0.0.1:6380/2
 REDIS_KEY_PREFIX={a}_validation
 SECRET_KEY=validation-secret
 JWT_SECRET_KEY=validation-jwt-secret
@@ -631,7 +665,7 @@ services:
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: {a}
     ports:
-      - "${{POSTGRES_PORT:-5432}}:5432"
+      - "${{POSTGRES_PORT:-{pg_port}}}:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d {a}"]
       interval: 5s
@@ -643,7 +677,7 @@ services:
   redis:
     image: redis:7
     ports:
-      - "${{REDIS_PORT:-6379}}:6379"
+      - "${{REDIS_PORT:-{redis_port}}}:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -673,7 +707,7 @@ help:
 \t@echo "  make dev-up && make db-init && make db-migrate && make run"
 
 dev-up:
-\tdocker compose up -d
+\tdocker compose up -d --wait
 
 dev-down:
 \tdocker compose down
