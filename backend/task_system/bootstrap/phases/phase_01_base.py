@@ -692,37 +692,42 @@ volumes:
 """, force=force)
 
     _write(root / "Makefile", """\
-.PHONY: dev-up dev-down dev-logs db-init db-migrate run help
+.PHONY: dev-up dev-down dev-logs db-init db-migrate run bootstrap-local help
 
 help:
-\t@echo "Development targets:"
-\t@echo "  make dev-up       - Start Docker services (postgres + redis)"
-\t@echo "  make dev-logs     - Stream Docker logs"
-\t@echo "  make dev-down     - Stop Docker services"
-\t@echo "  make db-init      - Wait for database to be ready"
-\t@echo "  make db-migrate   - Run Alembic migrations"
-\t@echo "  make run          - Start the FastAPI app with auto-reload"
-\t@echo ""
-\t@echo "Full workflow:"
-\t@echo "  make dev-up && make db-init && make db-migrate && make run"
+	@echo "Development targets:"
+	@echo "  make dev-up       - Start Docker services (postgres + redis)"
+	@echo "  make dev-logs     - Stream Docker logs"
+	@echo "  make dev-down     - Stop Docker services"
+	@echo "  make db-init      - Wait for database to be ready"
+	@echo "  make db-migrate   - Run Alembic migrations"
+	@echo "  make bootstrap-local - Full local init (venv, deps, env, docker, migrations)"
+	@echo "  make run          - Start the FastAPI app with auto-reload"
+	@echo ""
+	@echo "Full workflow:"
+	@echo "  make dev-up && make db-init && make db-migrate && make run"
+	@echo "  or: make bootstrap-local"
 
 dev-up:
-\tdocker compose up -d --wait
+	docker compose up -d --wait
 
 dev-down:
-\tdocker compose down
+	docker compose down
 
 dev-logs:
-\tdocker compose logs -f
+	docker compose logs -f
 
 db-init:
-\tPYTHONPATH=. APP_ENV=development python -m scripts.wait_for_services
+	PYTHONPATH=. APP_ENV=development python -m scripts.wait_for_services
 
 db-migrate:
-\tAPP_ENV=development alembic upgrade head
+	APP_ENV=development alembic upgrade head
 
 run:
-\tAPP_ENV=development python run.py
+	APP_ENV=development python run.py
+
+bootstrap-local:
+	bash scripts/bootstrap_local.sh
 """, force=force)
 
     _write(root / "README.md", f"""\
@@ -766,6 +771,22 @@ The app waits for PostgreSQL and Redis before Uvicorn starts. Startup fails if
 `DATABASE_URL` is missing, Redis is unreachable, or the configured database is
 not reachable.
 
+## One-Command Local Bootstrap
+
+Run the full local setup in one command:
+
+```bash
+make bootstrap-local
+```
+
+This script will:
+- create `.venv` if missing,
+- install dependencies,
+- create `.env` from `.env.example` if missing,
+- start Docker services,
+- auto-generate an initial migration if none exists,
+- run `alembic upgrade head`.
+
 ## Bootstrap Validation
 
 After installing dependencies, run:
@@ -778,8 +799,59 @@ The validation script starts Docker Compose services, creates the database if it
 is missing, runs `alembic upgrade head`, starts FastAPI, and verifies `/health`
 returns HTTP 200 with both DB and Redis connectivity marked `ok`.
 """, force=force)
-
+    
     _touch(root / "scripts" / "__init__.py", force=force)
+    _write(root / "scripts" / "bootstrap_local.sh", """\
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT_DIR"
+
+log() {
+    echo "[bootstrap-local] $1"
+}
+
+if [[ "${BOOTSTRAP_RESET_STATE:-0}" == "1" ]]; then
+    log "Reset requested. Removing docker volumes and migration files"
+    docker compose down -v || true
+    rm -f migrations/versions/*.py
+fi
+
+if [[ ! -d ".venv" ]]; then
+    log "Creating virtual environment (.venv)"
+    python3 -m venv .venv
+fi
+
+log "Activating .venv"
+source .venv/bin/activate
+
+log "Installing dependencies"
+pip install -r requirements.txt -r requirements-dev.txt
+
+if [[ ! -f ".env" ]]; then
+    log "Creating .env from .env.example"
+    cp .env.example .env
+fi
+
+log "Starting docker services"
+make dev-up
+
+log "Waiting for services"
+PYTHONPATH=. APP_ENV=development python -m scripts.wait_for_services
+
+if ! compgen -G "migrations/versions/*.py" > /dev/null; then
+    log "No migration found. Generating initial schema migration"
+    APP_ENV=development alembic revision --autogenerate -m "Initial schema"
+else
+    log "Migration file detected. Skipping autogenerate"
+fi
+
+log "Applying migrations"
+APP_ENV=development alembic upgrade head
+
+log "Done. Start API with: make run"
+""", force=force)
     _write(root / "scripts" / "wait_for_services.py", f"""\
 import asyncio
 import time

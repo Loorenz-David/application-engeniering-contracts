@@ -33,8 +33,7 @@ class Notification(IdentityMixin, Base):
     CLIENT_ID_PREFIX = "ntf"
     __tablename__ = "notifications"
 
-    recipient_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False, index=True)
-        recipient_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id", deferrable=True), nullable=False, index=True)
+    recipient_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id", deferrable=True), nullable=False, index=True)
     entity_type: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
     entity_client_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
     notification_type: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
@@ -60,9 +59,7 @@ class PushSubscription(IdentityMixin, Base):
     CLIENT_ID_PREFIX = "psub"
     __tablename__ = "push_subscriptions"
 
-    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False, index=True)
-        user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id", deferrable=True), nullable=False, index=True)
-        user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id", deferrable=True), nullable=False, index=True)
+    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id", deferrable=True), nullable=False, index=True)
     endpoint: Mapped[str] = mapped_column(String(1024), nullable=False, unique=True)
     p256dh: Mapped[str] = mapped_column(String(512), nullable=False)
     auth: Mapped[str] = mapped_column(String(512), nullable=False)
@@ -87,7 +84,7 @@ class NotificationPin(IdentityMixin, Base):
         UniqueConstraint("user_id", "entity_type", "entity_client_id", name="uq_notification_pins_user_entity"),
     )
 
-    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id", deferrable=True), nullable=False, index=True)
     entity_type: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
     entity_client_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
     pinned_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
