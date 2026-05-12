@@ -115,10 +115,24 @@ class User(IdentityMixin, Base):
 
     # FK shortcuts — updated atomically with the new child record
     last_app_view_record_id: Mapped[int | None] = mapped_column(
-        Integer, ForeignKey("user_app_view_records.id", deferrable=True), nullable=True
+        Integer,
+        ForeignKey(
+            "user_app_view_records.id",
+            name="fk_users_last_app_view_record_id",
+            use_alter=True,
+            deferrable=True,
+        ),
+        nullable=True,
     )
     last_history_record_id: Mapped[int | None] = mapped_column(
-        Integer, ForeignKey("user_history_records.id", deferrable=True), nullable=True
+        Integer,
+        ForeignKey(
+            "user_history_records.id",
+            name="fk_users_last_history_record_id",
+            use_alter=True,
+            deferrable=True,
+        ),
+        nullable=True,
     )
 
     # Role (wired in Phase 4)
