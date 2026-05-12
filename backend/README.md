@@ -67,6 +67,8 @@ python3 run/bootstrap_backend_system.py ...
 
 The script does **not** auto-install dependencies. `python3` in all commands below refers to whichever interpreter is active in your shell.
 
+Generated app config uses `SettingsConfigDict(..., extra="ignore")` so runtime-only env vars in `.env*` files do not fail startup validation.
+
 ## Fresh start workflow (including Git)
 
 Assume a fresh folder named `Manager-app` and no Git history yet.

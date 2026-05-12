@@ -90,6 +90,7 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         case_sensitive=False,
         enable_decoding=False,
+        extra="ignore",
     )
 
     @field_validator("frontend_origins", mode="before")
@@ -104,7 +105,7 @@ class Settings(BaseSettings):
         required = ["secret_key", "jwt_secret_key", "database_url", "redis_url"]
         missing = [name for name in required if not getattr(self, name)]
         if missing:
-            raise ValueError(f"Missing required settings: {', '.join(missing)}")
+            raise ValueError(f"Missing required settings: {{', '.join(missing)}}")
         return self
 
 

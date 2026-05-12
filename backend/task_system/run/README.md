@@ -47,6 +47,8 @@ Manager-app/
 
 Run from `backend/task_system` so paths remain predictable.
 
+Note: generated `backend/app/<app_name>/config.py` sets `SettingsConfigDict(..., extra="ignore")` intentionally so operational env vars (for example Docker/ports/reload flags) do not break startup, Alembic, workers, or CLI commands.
+
 Initialize backend umbrella structure in a fresh repo root:
 
 ```bash
