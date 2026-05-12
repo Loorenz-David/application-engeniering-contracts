@@ -216,13 +216,22 @@ Wait for services to be healthy. Check logs:
 APP_ENV=development make dev-logs
 ```
 
+### Initialize database
+
+Wait for postgres to be ready:
+
+```bash
+cd /path/to/Manager-app/backend/app
+APP_ENV=development make db-init
+```
+
 ### Run database migrations
 
 Apply all pending Alembic migrations:
 
 ```bash
 cd /path/to/Manager-app/backend/app
-APP_ENV=development alembic upgrade head
+APP_ENV=development make db-migrate
 ```
 
 ### Start the application
@@ -231,7 +240,7 @@ Launch the FastAPI app with hot reload:
 
 ```bash
 cd /path/to/Manager-app/backend/app
-APP_ENV=development python run.py
+APP_ENV=development make run
 ```
 
 The app will start on `http://localhost:5000` by default. Verify it's running:
@@ -242,13 +251,13 @@ curl http://localhost:5000/health
 
 You should see a JSON response with status information.
 
-### Validate the bootstrap
+### Complete workflow
 
-Optional: run the bootstrap validation script to verify all components are correctly generated and configured:
+Or combine all steps in one go:
 
 ```bash
 cd /path/to/Manager-app/backend/app
-APP_ENV=validation python scripts/validate_bootstrap.py
+APP_ENV=development make dev-up && make db-init && make db-migrate && make run
 ```
 
 ### Stop services (when done)
@@ -258,6 +267,15 @@ To stop and clean up Docker containers:
 ```bash
 cd /path/to/Manager-app/backend/app
 APP_ENV=development make dev-down
+```
+
+### View available Makefile targets
+
+See all available development commands:
+
+```bash
+cd /path/to/Manager-app/backend/app
+make help
 ```
 
 ## Ongoing sync when core contracts change

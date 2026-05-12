@@ -658,7 +658,19 @@ volumes:
 """, force=force)
 
     _write(root / "Makefile", """\
-.PHONY: dev-up dev-down dev-logs
+.PHONY: dev-up dev-down dev-logs db-init db-migrate run help
+
+help:
+\t@echo "Development targets:"
+\t@echo "  make dev-up       - Start Docker services (postgres + redis)"
+\t@echo "  make dev-logs     - Stream Docker logs"
+\t@echo "  make dev-down     - Stop Docker services"
+\t@echo "  make db-init      - Wait for database to be ready"
+\t@echo "  make db-migrate   - Run Alembic migrations"
+\t@echo "  make run          - Start the FastAPI app with auto-reload"
+\t@echo ""
+\t@echo "Full workflow:"
+\t@echo "  make dev-up && make db-init && make db-migrate && make run"
 
 dev-up:
 \tdocker compose up -d
@@ -668,6 +680,15 @@ dev-down:
 
 dev-logs:
 \tdocker compose logs -f
+
+db-init:
+\tPYTHONPATH=. APP_ENV=development python -m scripts.wait_for_services
+
+db-migrate:
+\tAPP_ENV=development alembic upgrade head
+
+run:
+\tAPP_ENV=development python run.py
 """, force=force)
 
     _write(root / "README.md", f"""\
