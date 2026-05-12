@@ -59,8 +59,10 @@ def create_app() -> FastAPI:
 
     # ── config ───────────────────────────────────────────────────────────────
     _write(root / a / "config.py", f"""\
+from typing import Annotated
+
 from pydantic import field_validator, model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -76,7 +78,7 @@ class Settings(BaseSettings):
     redis_key_prefix: str = "{a}"
 
     # CORS
-    frontend_origins: list[str] = ["http://localhost:5173"]
+    frontend_origins: Annotated[list[str], NoDecode] = ["http://localhost:5173"]
 
     # JWT
     jwt_access_token_expire_minutes: int = 30
@@ -89,7 +91,6 @@ class Settings(BaseSettings):
         env_file=(".env", ".env.local", ".env.testing", ".env.validation", ".env.production"),
         env_file_encoding="utf-8",
         case_sensitive=False,
-        enable_decoding=False,
         extra="ignore",
     )
 
