@@ -8,6 +8,39 @@ This folder contains executable entrypoints for backend task-system workflows.
 - `bootstrap.py`: Generate a backend application from the contract bootstrap phases.
 - `check_backend_contract_references.py`: Validate guide references to backend contracts.
 
+## Terminology
+
+- Canonical contracts source: authoritative contracts/tooling source for bootstrap and sync.
+- Generated backend runtime: `backend/` in the app repo used at runtime.
+- Local encapsulated copies: synchronized copies of contracts/docs/skills in generated backend runtime.
+
+## Supported repository modes
+
+### Mode A - External Canonical Contracts Repo (recommended)
+
+```text
+/Application_contracts
+/Manager-app
+```
+
+- Run commands from `/Application_contracts/backend/task_system`.
+- Output target is the external app repo root.
+- Best for multi-app scaling and centralized ownership.
+
+### Mode B - Self-contained Application Repo
+
+```text
+Manager-app/
+├── application_contracts/
+├── backend/
+├── frontend/
+└── test/
+```
+
+- Run commands from `Manager-app/application_contracts/backend/task_system`.
+- Output target is normally `Manager-app` repository root.
+- Useful for isolated/early-stage projects.
+
 ## Usage
 
 Run from `backend/task_system` so paths remain predictable.
@@ -17,6 +50,14 @@ Initialize backend umbrella structure in a fresh repo root:
 ```bash
 cd backend/task_system
 python3 run/bootstrap_backend_system.py --output-dir /path/to/new-app-root
+```
+
+Self-contained mode example:
+
+```bash
+cd /path/to/Manager-app/application_contracts/backend/task_system
+python3 run/bootstrap_backend_system.py \
+  --output-dir /path/to/Manager-app
 ```
 
 Sync canonical contracts into an existing local app backend:
@@ -61,6 +102,13 @@ cd backend/task_system
 python3 run/bootstrap_backend_system.py --output-dir /path/to/new-app-root --sync-all --preserve-local --validate
 ```
 
+### Important bootstrap target warning
+
+- Use the repository root as `--output-dir` for standard workflows.
+- `bootstrap_backend_system.py` creates/manages the `backend/` directory structure.
+- Avoid `--output-dir /path/to/new-app-root/backend` unless you explicitly want nested backend output.
+- If a manually created `backend/` already exists with inconsistent contents, nested backend trees can be created accidentally.
+
 ### bootstrap_backend_system flags
 
 - `--output-dir`, `-o`: Target repository root where `backend/` will be created or updated.
@@ -76,11 +124,18 @@ python3 run/bootstrap_backend_system.py --output-dir /path/to/new-app-root --syn
 
 Every non-dry-run run writes a timestamped audit artifact:
 
-```
+```text
 backend/sync_reports/SYNC_REPORT_<YYYYMMDD_HHMMSS>.md
 ```
 
 The report includes: run metadata (root, target, flags), file counts (contracts, docs, skills, stubs, version files), a full list of every path written, and validation result when `--validate` was passed.
+
+### Sync behavior in self-contained mode
+
+- Sync commands still work normally.
+- Source and target now live in the same repository.
+- Be explicit about ownership: edit canonical source under `application_contracts/backend/*`, then sync into generated runtime `backend/*`.
+- Avoid circular edits across both locations in a single change unless intentionally performing a migration.
 
 ### When to run which mode
 
@@ -142,8 +197,7 @@ python3 run/bootstrap.py --app-name my_app --target /tmp --phase all
 
 ## Parallel layout flow (backend system + app build)
 
-Use the same repo root as target for the system bootstrap, then point app bootstrap
-to the `backend/app` subfolder created by that step:
+Use the same repo root as target for the system bootstrap, then point app bootstrap to the `backend/app` subfolder created by that step:
 
 ```bash
 cd backend/task_system
@@ -153,5 +207,4 @@ python3 run/bootstrap.py --app-name my_app --target /path/to/new-app-root/backen
 
 `--target` and `--output-dir` are equivalent for `run/bootstrap.py`.
 
-For `run/bootstrap_backend_system.py`, `--sync-contracts` updates canonical contract files only.
-Local companion docs (`*_local.md`) are preserved by default.
+For `run/bootstrap_backend_system.py`, `--sync-contracts` updates canonical contract files only. Local companion docs (`*_local.md`) are preserved by default.

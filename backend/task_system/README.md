@@ -15,6 +15,39 @@
 - Keep backend-first routing here.
 - Keep cross-layer routing in a separate location unless explicitly needed in backend workflows.
 
+## Terminology
+
+- Canonical contracts source: authoritative contracts/tooling source used to bootstrap and sync.
+- Generated backend runtime: app repo `backend/` directory used by runtime services.
+- Local encapsulated copies: synchronized contracts/docs/skills inside generated backend runtime.
+
+## Supported repository modes
+
+### Mode A - External Canonical Contracts Repo (recommended)
+
+```text
+/Application_contracts
+/Manager-app
+```
+
+- Central source serves multiple app repositories.
+- Run bootstrap/sync commands from `/Application_contracts/backend/task_system`.
+- Best for long-term multi-app scaling.
+
+### Mode B - Self-contained Application Repo
+
+```text
+Manager-app/
+├── application_contracts/
+├── backend/
+├── frontend/
+└── test/
+```
+
+- Contracts/tooling are vendored inside the app repo.
+- Run bootstrap/sync commands from `Manager-app/application_contracts/backend/task_system`.
+- Useful for isolated projects and early-stage development.
+
 ## Minimal starter files
 
 - `backend_contract_goal_mapping_guide.md`
@@ -27,6 +60,7 @@
 ## Source migration note
 
 If you are migrating from this repository layout, base content on:
+
 - `task_system/contract_goal_mapping_guide.md`
 - `task_system/resolver.py`
 
@@ -71,11 +105,20 @@ python3 resolver.py "add replay and worker retry diagnostics"
 
 ## Backend bootstrap usage
 
-Bootstrap the backend umbrella layout itself:
+Bootstrap the backend umbrella layout itself.
+
+Mode A (external canonical repo):
 
 ```bash
-cd backend/task_system
-python3 run/bootstrap_backend_system.py --output-dir /path/to/new-app-root
+cd /Users/davidloorenz/Desktop/Developer/Application_contracts/backend/task_system
+/Users/davidloorenz/Desktop/Developer/Application_contracts/.venv/bin/python run/bootstrap_backend_system.py --output-dir /path/to/new-app-root
+```
+
+Mode B (self-contained app repo):
+
+```bash
+cd /path/to/Manager-app/application_contracts/backend/task_system
+python3 run/bootstrap_backend_system.py --output-dir /path/to/Manager-app
 ```
 
 Sync canonical contracts into a local app backend architecture:
@@ -112,6 +155,19 @@ Sync all local backend encapsulation assets at once:
 cd backend/task_system
 python3 run/bootstrap_backend_system.py --output-dir /path/to/new-app-root --sync-all --preserve-local --validate
 ```
+
+### Important bootstrap target warning
+
+- Use repository root for `--output-dir` in normal usage.
+- The bootstrap script creates/manages `backend/` under that root.
+- Do not point `--output-dir` to `/path/to/new-app-root/backend` unless nested output is intentional.
+- If a manually created `backend/` already exists with mismatched structure, nested backend directories can be produced.
+
+### Self-contained mode sync behavior
+
+- Sync commands are fully supported.
+- Source and target live in one repository, so naming/ownership discipline is required.
+- Keep canonical source edits in `application_contracts/backend/*` and generated runtime edits in `backend/*`.
 
 Bootstrap-system flags:
 

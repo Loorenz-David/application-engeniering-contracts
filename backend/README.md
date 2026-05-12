@@ -2,17 +2,49 @@
 
 This folder is the backend-encapsulated entry surface for new applications.
 
-## Intended structure
+## Terminology
 
-- `architecture/` -> backend contracts only
-- `task_system/` -> backend resolver/bootstrap tooling only
-- `app/` -> runtime backend codebase (created per app)
-- `docs/` -> backend app docs (created per app)
+Use these terms consistently:
 
-## Separation rule
+- Canonical contracts source: the authoritative contracts and tooling source (this `Application_contracts` backend workspace).
+- Generated backend runtime: the app repo's `backend/` folder used to run the application.
+- Local encapsulated copies: synchronized copies of contracts/docs/skills inside the generated backend runtime.
 
-- `architecture/` stays contracts-only.
-- `task_system/` consumes contracts and guides, but does not define canonical contracts.
+## Supported repository modes
+
+### Mode A - External Canonical Contracts Repo (recommended)
+
+Structure:
+
+```text
+/Application_contracts
+/Manager-app
+```
+
+How it works:
+
+- Contracts and tooling are maintained centrally in `/Application_contracts`.
+- Multiple app repositories can consume the same canonical source.
+- Bootstrap and sync commands execute from the external contracts repo.
+- Best choice for long-term scaling and multi-app governance.
+
+### Mode B - Self-contained Application Repo
+
+Structure:
+
+```text
+Manager-app/
+├── application_contracts/
+├── backend/
+├── frontend/
+└── test/
+```
+
+How it works:
+
+- Contracts and tooling are vendored into the app repo under `application_contracts/`.
+- Useful for isolated projects, pilots, or early-stage development.
+- Bootstrap and sync commands execute from the embedded local contracts path.
 
 ## Fresh start workflow (including Git)
 
@@ -28,14 +60,21 @@ git init
 
 ### 2) Bootstrap backend system layout
 
-Run from this contracts workspace so the scripts can stamp your new repo:
+Mode A (external canonical repo):
 
 ```bash
 cd /Users/davidloorenz/Desktop/Developer/Application_contracts/backend/task_system
 /Users/davidloorenz/Desktop/Developer/Application_contracts/.venv/bin/python run/bootstrap_backend_system.py --output-dir /path/to/Manager-app
 ```
 
-This creates:
+Mode B (self-contained app repo):
+
+```bash
+cd /path/to/Manager-app/application_contracts/backend/task_system
+python3 run/bootstrap_backend_system.py --output-dir /path/to/Manager-app
+```
+
+This creates or manages:
 
 - `backend/architecture/`
 - `backend/task_system/`
@@ -46,11 +85,28 @@ This creates:
 - `backend/docs.version`
 - `backend/skills.version`
 
+### Important bootstrap target warning
+
+- Set `--output-dir` to the repository root in normal usage.
+- The bootstrap script creates and manages `backend/` for you.
+- Avoid targeting `/path/to/Manager-app/backend` directly unless you intentionally want a nested layout.
+- If a manually created `backend/` already exists with conflicting structure, nested backend folders can be created accidentally.
+- Recommended practice: let the bootstrap script own backend structure creation from repo root.
+
 ### 3) Generate backend app code inside backend/app
+
+Mode A (external canonical repo):
 
 ```bash
 cd /Users/davidloorenz/Desktop/Developer/Application_contracts/backend/task_system
 /Users/davidloorenz/Desktop/Developer/Application_contracts/.venv/bin/python run/bootstrap.py --app-name manager_app --target /path/to/Manager-app/backend/app --phase all
+```
+
+Mode B (self-contained app repo):
+
+```bash
+cd /path/to/Manager-app/application_contracts/backend/task_system
+python3 run/bootstrap.py --app-name manager_app --target /path/to/Manager-app/backend/app --phase all
 ```
 
 ### 4) Validate guide references in the generated repo
@@ -79,25 +135,46 @@ git push -u origin main
 
 ## Ongoing sync when core contracts change
 
-When canonical contracts change upstream, refresh your local app safely:
+Mode A (external canonical repo):
 
 ```bash
 cd /Users/davidloorenz/Desktop/Developer/Application_contracts/backend/task_system
 /Users/davidloorenz/Desktop/Developer/Application_contracts/.venv/bin/python run/bootstrap_backend_system.py --output-dir /path/to/Manager-app --sync-contracts --sync-guide --preserve-local
 ```
 
+Mode B (self-contained app repo):
+
+```bash
+cd /path/to/Manager-app/application_contracts/backend/task_system
+python3 run/bootstrap_backend_system.py --output-dir /path/to/Manager-app --sync-contracts --sync-guide --preserve-local
+```
+
 This updates canonical contract files and guide core references while preserving local `*_local.md` companion files by default.
 
 ## Ongoing sync for full local encapsulation (contracts + docs + skills)
 
-To keep local app backend docs architecture and skills in sync with this source repo:
+Mode A (external canonical repo):
 
 ```bash
 cd /Users/davidloorenz/Desktop/Developer/Application_contracts/backend/task_system
 /Users/davidloorenz/Desktop/Developer/Application_contracts/.venv/bin/python run/bootstrap_backend_system.py --output-dir /path/to/Manager-app --sync-all --preserve-local --validate
 ```
 
+Mode B (self-contained app repo):
+
+```bash
+cd /path/to/Manager-app/application_contracts/backend/task_system
+python3 run/bootstrap_backend_system.py --output-dir /path/to/Manager-app --sync-all --preserve-local --validate
+```
+
 Use `--dry-run` first to preview changes without writing.
+
+## Sync behavior in self-contained mode
+
+- Sync commands still work in the same way.
+- Source and target now live in the same repository.
+- Keep a clear boundary between canonical contracts source (`application_contracts/backend/architecture/`) and generated backend runtime (`backend/architecture/`).
+- Avoid editing both copies in one change without an explicit migration intent, or ownership becomes ambiguous.
 
 ## Additional run docs
 
@@ -112,5 +189,4 @@ Backend skill definitions live in:
 
 - `skills/README.md`
 
-Use skills for recurring intents and keep mapping-guide routing as fallback for
-new or ambiguous tasks.
+Use skills for recurring intents and keep mapping-guide routing as fallback for new or ambiguous tasks.
