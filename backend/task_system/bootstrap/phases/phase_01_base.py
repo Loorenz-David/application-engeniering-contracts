@@ -94,6 +94,7 @@ class Settings(BaseSettings):
         env_file=(".env", ".env.local", ".env.testing", ".env.validation", ".env.production"),
         env_file_encoding="utf-8",
         case_sensitive=False,
+        env_ignore_empty=True,
         extra="ignore",
     )
 
@@ -436,11 +437,15 @@ UVICORN_RELOAD=0
 
     _write(root / ".env.production", """\
 ENVIRONMENT=production
-DATABASE_URL=
-REDIS_URL=
+
+# Provide production values via real environment or secret manager.
+# Keep required keys commented so this file never overrides valid local values
+# with empty strings when env files are layered.
+# DATABASE_URL=
+# REDIS_URL=
 REDIS_KEY_PREFIX=app_production
-SECRET_KEY=
-JWT_SECRET_KEY=
+# SECRET_KEY=
+# JWT_SECRET_KEY=
 """, force=force)
 
     _write(root / ".gitignore", """\
