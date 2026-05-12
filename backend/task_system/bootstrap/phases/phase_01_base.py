@@ -61,31 +61,34 @@ def create_app() -> FastAPI:
     _write(root / a / "config.py", f"""\
 from typing import Annotated
 
-from pydantic import field_validator, model_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
 class Settings(BaseSettings):
     # Core
-    secret_key:     str | None = None
-    jwt_secret_key: str | None = None
+    secret_key: str | None = Field(default=None, alias="SECRET_KEY")
+    jwt_secret_key: str | None = Field(default=None, alias="JWT_SECRET_KEY")
 
     # Database - must use asyncpg driver: postgresql+asyncpg://...
-    database_url: str | None = None
+    database_url: str | None = Field(default=None, alias="DATABASE_URL")
 
     # Redis
-    redis_url:        str | None = None
-    redis_key_prefix: str = "{a}"
+    redis_url: str | None = Field(default=None, alias="REDIS_URL")
+    redis_key_prefix: str = Field(default="{a}", alias="REDIS_KEY_PREFIX")
 
     # CORS
-    frontend_origins: Annotated[list[str], NoDecode] = ["http://localhost:5173"]
+    frontend_origins: Annotated[list[str], NoDecode] = Field(
+        default=["http://localhost:5173"],
+        alias="FRONTEND_ORIGINS",
+    )
 
     # JWT
-    jwt_access_token_expire_minutes: int = 30
-    jwt_refresh_token_expire_days:   int = 30
+    jwt_access_token_expire_minutes: int = Field(default=30, alias="JWT_ACCESS_TOKEN_EXPIRE_MINUTES")
+    jwt_refresh_token_expire_days: int = Field(default=30, alias="JWT_REFRESH_TOKEN_EXPIRE_DAYS")
 
     # Environment
-    environment: str = "development"  # development | testing | production
+    environment: str = Field(default="development", alias="ENVIRONMENT")
 
     model_config = SettingsConfigDict(
         env_file=(".env", ".env.local", ".env.testing", ".env.validation", ".env.production"),

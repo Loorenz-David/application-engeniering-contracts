@@ -49,6 +49,8 @@ Run from `backend/task_system` so paths remain predictable.
 
 Note: generated `backend/app/<app_name>/config.py` sets `SettingsConfigDict(..., extra="ignore")` intentionally so operational env vars (for example Docker/ports/reload flags) do not break startup, Alembic, workers, or CLI commands.
 
+Generated settings also use explicit `Field(..., alias="ENV_VAR")` aliases so environment variable mapping is deterministic in Pydantic v2.
+
 Initialize backend umbrella structure in a fresh repo root:
 
 ```bash

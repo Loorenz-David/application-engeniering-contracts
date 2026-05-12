@@ -69,6 +69,8 @@ The script does **not** auto-install dependencies. `python3` in all commands bel
 
 Generated app config uses `SettingsConfigDict(..., extra="ignore")` so runtime-only env vars in `.env*` files do not fail startup validation.
 
+Generated app config also uses explicit `Field(..., alias="ENV_VAR")` mappings for settings keys so Pydantic v2 resolves environment variables deterministically across app runtime, Alembic, workers, and CI.
+
 ## Fresh start workflow (including Git)
 
 Assume a fresh folder named `Manager-app` and no Git history yet.
