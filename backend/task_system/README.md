@@ -107,11 +107,13 @@ python3 resolver.py "add replay and worker retry diagnostics"
 
 Bootstrap the backend umbrella layout itself.
 
+> **Pick one mode for your repository shape.** If `application_contracts/` lives inside your app repo, use Mode B and ignore Mode A. Mode A applies only when contracts are hosted in a separate external repo.
+
 Mode A (external canonical repo):
 
 ```bash
 cd /Users/davidloorenz/Desktop/Developer/Application_contracts/backend/task_system
-/Users/davidloorenz/Desktop/Developer/Application_contracts/.venv/bin/python run/bootstrap_backend_system.py --output-dir /path/to/new-app-root
+python3 run/bootstrap_backend_system.py --output-dir /path/to/new-app-root
 ```
 
 Mode B (self-contained app repo):

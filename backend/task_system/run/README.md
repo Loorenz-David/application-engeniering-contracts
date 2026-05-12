@@ -43,6 +43,8 @@ Manager-app/
 
 ## Usage
 
+> **Pick one mode for startup.** If your app repo contains `application_contracts/`, run from `application_contracts/backend/task_system` (Mode B). The generic `cd backend/task_system` examples below assume Mode A (external contracts repo).
+
 Run from `backend/task_system` so paths remain predictable.
 
 Initialize backend umbrella structure in a fresh repo root:

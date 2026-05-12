@@ -46,6 +46,27 @@ How it works:
 - Useful for isolated projects, pilots, or early-stage development.
 - Bootstrap and sync commands execute from the embedded local contracts path.
 
+## Prerequisites
+
+The bootstrap script requires `typer` (its only third-party dependency). All other imports are Python stdlib.
+
+Install it once into a venv before running any bootstrap or sync command:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install typer
+```
+
+Then activate that venv before every run:
+
+```bash
+source /path/to/.venv/bin/activate
+python3 run/bootstrap_backend_system.py ...
+```
+
+The script does **not** auto-install dependencies. `python3` in all commands below refers to whichever interpreter is active in your shell.
+
 ## Fresh start workflow (including Git)
 
 Assume a fresh folder named `Manager-app` and no Git history yet.
@@ -60,11 +81,13 @@ git init
 
 ### 2) Bootstrap backend system layout
 
+> **Pick one mode for this repo shape.** If your app repo already contains `application_contracts/` (Mode B), skip the Mode A command entirely. Mode A is only for setups where contracts live in a separate `/Application_contracts` repo.
+
 Mode A (external canonical repo):
 
 ```bash
 cd /Users/davidloorenz/Desktop/Developer/Application_contracts/backend/task_system
-/Users/davidloorenz/Desktop/Developer/Application_contracts/.venv/bin/python run/bootstrap_backend_system.py --output-dir /path/to/Manager-app
+python3 run/bootstrap_backend_system.py --output-dir /path/to/Manager-app
 ```
 
 Mode B (self-contained app repo):
@@ -99,7 +122,7 @@ Mode A (external canonical repo):
 
 ```bash
 cd /Users/davidloorenz/Desktop/Developer/Application_contracts/backend/task_system
-/Users/davidloorenz/Desktop/Developer/Application_contracts/.venv/bin/python run/bootstrap.py --app-name manager_app --target /path/to/Manager-app/backend/app --phase all
+python3 run/bootstrap.py --app-name manager_app --target /path/to/Manager-app/backend/app --phase all
 ```
 
 Mode B (self-contained app repo):
@@ -139,7 +162,7 @@ Mode A (external canonical repo):
 
 ```bash
 cd /Users/davidloorenz/Desktop/Developer/Application_contracts/backend/task_system
-/Users/davidloorenz/Desktop/Developer/Application_contracts/.venv/bin/python run/bootstrap_backend_system.py --output-dir /path/to/Manager-app --sync-contracts --sync-guide --preserve-local
+python3 run/bootstrap_backend_system.py --output-dir /path/to/Manager-app --sync-contracts --sync-guide --preserve-local
 ```
 
 Mode B (self-contained app repo):
@@ -157,7 +180,7 @@ Mode A (external canonical repo):
 
 ```bash
 cd /Users/davidloorenz/Desktop/Developer/Application_contracts/backend/task_system
-/Users/davidloorenz/Desktop/Developer/Application_contracts/.venv/bin/python run/bootstrap_backend_system.py --output-dir /path/to/Manager-app --sync-all --preserve-local --validate
+python3 run/bootstrap_backend_system.py --output-dir /path/to/Manager-app --sync-all --preserve-local --validate
 ```
 
 Mode B (self-contained app repo):
