@@ -6,7 +6,7 @@ from bootstrap.writer import append_once, touch_file as _touch, write_file as _w
 
 
 def _phase11_testing(root: Path, a: str, force: bool) -> None:
-    typer.echo("\n-- Phase 11 - Testing ----------------------------------------------")
+    typer.echo("\n-- Phase 12 - Testing ----------------------------------------------")
 
     test_dirs = [
         root / "tests" / "unit",

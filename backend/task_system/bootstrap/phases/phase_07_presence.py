@@ -73,14 +73,14 @@ async def handle_record_view_start(payload: dict) -> None:
         if user is None:
             return
         record = UserAppViewRecord(
-            user_id=user.id,
+            user_id=user.client_id,
             entity_type=entity_type,
             entity_client_id=entity_client_id,
             started_at=datetime.now(timezone.utc),
         )
         session.add(record)
         await session.flush()
-        user.last_app_view_record_id = record.id
+        user.last_app_view_record_id = record.client_id
         await session.commit()
 """, force=True)
     _write(root / a / "services" / "tasks" / "presence" / "record_view_end.py", f"""\
@@ -106,7 +106,7 @@ async def handle_record_view_end(payload: dict) -> None:
         result = await session.execute(
             select(UserAppViewRecord)
             .where(
-                UserAppViewRecord.user_id == user.id,
+                UserAppViewRecord.user_id == user.client_id,
                 UserAppViewRecord.entity_type == entity_type,
                 UserAppViewRecord.entity_client_id == entity_client_id,
                 UserAppViewRecord.ended_at.is_(None),

@@ -63,8 +63,8 @@ This is the single source of truth for all naming decisions. When in doubt, look
 |---|---|---|
 | Table name | `snake_case` plural | `records`, `categories`, `record_states` |
 | Column name | `snake_case` | `workspace_id`, `created_at`, `client_id` |
-| Foreign key | `<referenced_table_singular>_id` | `record_id`, `workspace_id`, `category_id` |
-| Client-facing ID | `client_id` | UUID string, stable across APIs |
+| Foreign key | `<referenced_table_singular>_id`, `String(64)`, FK to `<table>.client_id` | `record_id`, `workspace_id`, `category_id` |
+| Primary/client-facing ID | `client_id` | Prefixed ULID string, stable across DB relations and APIs |
 | Timestamp (event) | `<event>_at` | `created_at`, `dispatched_at`, `deleted_at` |
 | Timestamp (date) | `<context>_date` | `scheduled_date`, `effective_date` |
 | Boolean flag | `is_<state>` or `has_<noun>` | `is_active`, `is_deleted`, `has_attachment` |
@@ -85,7 +85,7 @@ This is the single source of truth for all naming decisions. When in doubt, look
 
 Use kebab-case for multi-word path segments: `/event-history`, `/state-changes`. Never camelCase in URLs.
 
-Public routes use `client_id` path parameters. Internal integer IDs are allowed only inside trusted service code, jobs, and database joins. See [38_identity_resolution.md](38_identity_resolution.md).
+Public routes use `client_id` path parameters. Do not introduce internal integer IDs for addressable entities; joins and jobs use the same prefixed ULID identity. See [38_identity_resolution.md](38_identity_resolution.md).
 
 ---
 

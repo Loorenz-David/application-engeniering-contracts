@@ -150,12 +150,12 @@ For commands where there is no natural unique key, the client sends an `idempote
 
 ```python
 # models/tables/idempotency_keys.py
-class IdempotencyKey(db.Model):
+class IdempotencyKey(IdentityMixin, db.Model):
+    CLIENT_ID_PREFIX = "idk"
     __tablename__ = "idempotency_keys"
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
     key: Mapped[str] = mapped_column(String(128), unique=True, nullable=False, index=True)
-    workspace_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    workspace_id: Mapped[str] = mapped_column(String(64), ForeignKey("workspaces.client_id"), nullable=False)
     command: Mapped[str] = mapped_column(String(128), nullable=False)
     response: Mapped[dict] = mapped_column(JSON, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
@@ -215,8 +215,8 @@ from rq import Queue
 q = Queue("default", connection=redis_conn)
 q.enqueue(
     handle_record_created_send_notification,
-    record_id=record.id,
-    job_id=f"notify-record-created-{record.id}",  # deterministic — safe to enqueue twice
+    record_id=record.client_id,
+    job_id=f"notify-record-created-{record.client_id}",  # deterministic — safe to enqueue twice
     retry=Retry(max=3, interval=[10, 30, 60]),
 )
 ```
@@ -225,8 +225,8 @@ If the same `job_id` is enqueued twice, RQ silently ignores the second enqueue. 
 
 **Deterministic job ID naming:**
 ```
-<action>-<domain>-<entity-id>         # notify-record-created-123
-<action>-<domain>-<workspace>-<date>  # analytics-snapshot-workspace-7-2025-01-15
+<action>-<domain>-<entity-client-id>  # notify-record-created-rec_01...
+<action>-<domain>-<workspace>-<date>  # analytics-snapshot-workspace-ws_01...-2025-01-15
 ```
 
 ---
@@ -245,7 +245,7 @@ if record.status == "draft":        # another worker reads here too
 # CORRECT — conditional update with a WHERE clause
 rows = (
     db.session.query(Record)
-    .filter(Record.id == record_id, Record.status == "draft")
+    .filter(Record.client_id == record_id, Record.status == "draft")
     .update({"status": "active"}, synchronize_session=False)
 )
 if rows == 0:
@@ -264,7 +264,7 @@ db.session.execute(
     text("""
         UPDATE records
         SET total = (SELECT COALESCE(SUM(amount), 0) FROM line_items WHERE record_id = :rid)
-        WHERE id = :rid AND workspace_id = :wid
+        WHERE client_id = :rid AND workspace_id = :wid
     """),
     {"rid": record_id, "wid": ctx.workspace_id},
 )

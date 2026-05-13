@@ -77,7 +77,7 @@ logger.info(
     "Record created | request_id=%s workspace=%s record_id=%s",
     ctx.request_id if hasattr(ctx, "request_id") else "-",
     ctx.workspace_id,
-    record.id,
+    record.client_id,
 )
 ```
 
@@ -87,7 +87,7 @@ Background jobs should generate their own correlation ID at job entry:
 # services/tasks/notifications.py
 import uuid
 
-def send_record_created_notification(record_id: int, workspace_id: int) -> None:
+def send_record_created_notification(record_id: str, workspace_id: str) -> None:
     job_id = str(uuid.uuid4())
     logger.info(
         "Job started | job_id=%s record_id=%s workspace_id=%s",
@@ -125,9 +125,8 @@ Every log statement in a command, query, or job must include the identity fields
 ```python
 # Correct
 logger.info(
-    "Record created | workspace=%s record_id=%s client_id=%s",
+    "Record created | workspace=%s record_id=%s",
     ctx.workspace_id,
-    record.id,
     record.client_id,
 )
 
@@ -283,7 +282,7 @@ import logging
 logging.info("Something happened")
 
 # Wrong — print statements in production code
-print(f"Created record {record.id}")
+print(f"Created record {record.client_id}")
 
 # Wrong — logging PII
 logger.info("User logged in | email=%s password=%s", email, password)

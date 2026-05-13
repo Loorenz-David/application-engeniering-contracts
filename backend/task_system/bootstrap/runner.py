@@ -12,12 +12,13 @@ Phases
     7   Execution            Background execution registry and task wiring
     8   Presence             Presence tracking and view activity handlers
     9   Notifications        Notification models and handlers
-    10  Observability        Structured logging, correlation IDs, request middleware
-    11  Testing              pytest scaffolding, fixtures, test isolation, test commands
-    12  Worker runtime       Queue/worker runtime, retry/dead-letter scaffolding
-    13  CI/CD                GitHub Actions workflows and CI validation hooks
-    14  Replayability        Replay helpers, replay metadata, event-store interfaces
-    15  Operational CLI      Typer operational commands and make targets
+    10  Case/Image records   Foundation case and image domains, models, serializers
+    11  Observability        Structured logging, correlation IDs, request middleware
+    12  Testing              pytest scaffolding, fixtures, test isolation, test commands
+    13  Worker runtime       Queue/worker runtime, retry/dead-letter scaffolding
+    14  CI/CD                GitHub Actions workflows and CI validation hooks
+    15  Replayability        Replay helpers, replay metadata, event-store interfaces
+    16  Operational CLI      Typer operational commands and make targets
 
 Usage
 -----
@@ -46,6 +47,7 @@ from bootstrap.phases.phase_05_realtime import _phase5 as _phase6_realtime
 from bootstrap.phases.phase_06_execution import _phase6 as _phase7_execution
 from bootstrap.phases.phase_07_presence import _phase7 as _phase8_presence
 from bootstrap.phases.phase_08_notifications import _phase8 as _phase9_notifications
+from bootstrap.phases.phase_09_foundation_records import _phase10_foundation_records
 from bootstrap.phases.phase_10_observability import _phase10_observability
 from bootstrap.phases.phase_11_testing import _phase11_testing
 from bootstrap.phases.phase_12_worker_runtime import _phase12_worker_runtime
@@ -67,16 +69,17 @@ def _run_phases(phases: list[int], root: Path, a: str, force: bool) -> None:
         7: lambda: _phase7_execution(root, a, force),
         8: lambda: _phase8_presence(root, a, force),
         9: lambda: _phase9_notifications(root, a, force),
-        10: lambda: _phase10_observability(root, a, force),
-        11: lambda: _phase11_testing(root, a, force),
-        12: lambda: _phase12_worker_runtime(root, a, force),
-        13: lambda: _phase13_ci_cd(root, a, force),
-        14: lambda: _phase14_replayability(root, a, force),
-        15: lambda: _phase15_operational_cli(root, a, force),
+        10: lambda: _phase10_foundation_records(root, a, force),
+        11: lambda: _phase10_observability(root, a, force),
+        12: lambda: _phase11_testing(root, a, force),
+        13: lambda: _phase12_worker_runtime(root, a, force),
+        14: lambda: _phase13_ci_cd(root, a, force),
+        15: lambda: _phase14_replayability(root, a, force),
+        16: lambda: _phase15_operational_cli(root, a, force),
     }
     for n in phases:
         if n not in dispatch:
-            typer.echo(f"  [error] Phase {n} does not exist (valid: 1-15)", err=True)
+            typer.echo(f"  [error] Phase {n} does not exist (valid: 1-16)", err=True)
             raise typer.Exit(1)
         dispatch[n]()
 
@@ -85,7 +88,7 @@ def _parse_phase_arg(phase_str: str) -> list[int]:
     """Parse '1', '1-3', or 'all' into a sorted list of phase numbers."""
     s = phase_str.strip().lower()
     if s == "all":
-        return list(range(1, 16))
+        return list(range(1, 17))
     if "-" in s:
         parts = s.split("-", 1)
         try:
@@ -109,7 +112,7 @@ def _migrate_legacy_phase_numbers(phases: list[int]) -> list[int]:
 
     Legacy mapping:
       1->1, 2->2, 3->3, 4->5, 5->6, 6->7, 7->8, 8->9
-    Current 9-15 values pass through unchanged.
+    Current 9-16 values pass through unchanged.
     """
     mapping = {
         1: 1,
@@ -127,12 +130,13 @@ def _migrate_legacy_phase_numbers(phases: list[int]) -> list[int]:
         13: 13,
         14: 14,
         15: 15,
+        16: 16,
     }
     migrated: list[int] = []
     for phase in phases:
         if phase not in mapping:
             typer.echo(
-                f"[error] Legacy phase {phase} is invalid (valid legacy range: 1-15).",
+                f"[error] Legacy phase {phase} is invalid (valid legacy range: 1-16).",
                 err=True,
             )
             raise typer.Exit(1)
@@ -158,6 +162,24 @@ def _validate_phase_prerequisites(phases: list[int], root: Path, app_name: str) 
             err=True,
         )
         raise typer.Exit(1)
+    if 10 in phases:
+        prerequisites = {
+            2: root / app_name / "models" / "base" / "identity.py",
+            5: root / app_name / "models" / "tables" / "workspaces" / "workspace_membership.py",
+            7: root / app_name / "models" / "base" / "event.py",
+        }
+        missing = [
+            phase
+            for phase, path in prerequisites.items()
+            if phase not in phases and not path.exists()
+        ]
+        if missing:
+            typer.echo(
+                "[error] Phase 10 requires phases 2, 5, and 7. "
+                f"Missing: {', '.join(str(phase) for phase in missing)}.",
+                err=True,
+            )
+            raise typer.Exit(1)
 
 
 @cli.command()
@@ -174,7 +196,7 @@ def main(
     legacy_phase_numbering: bool = typer.Option(
         False,
         "--legacy-phase-numbering",
-        help="Interpret --phase with legacy remap (4->5, 5->6, 6->7, 7->8, 8->9); 9-15 unchanged.",
+        help="Interpret --phase with legacy remap (4->5, 5->6, 6->7, 7->8, 8->9); 9-16 unchanged.",
     ),
     force: bool = typer.Option(False, "--force", "-f", help="Overwrite existing files"),
     validate: bool = typer.Option(False, "--validate", help="Run Docker-backed bootstrap validation after generation"),
@@ -221,7 +243,7 @@ def main(
         typer.echo("  - Validation uses dynamic ports intentionally to avoid host port collisions.")
         typer.echo("  - Validation runtime is isolated from host-installed DB/Redis services.")
 
-    if any(phase_id >= 10 for phase_id in phases):
+    if any(phase_id >= 11 for phase_id in phases):
         typer.echo("\nOperational maturity guidance:")
         typer.echo("  - make lint && make format")
         typer.echo("  - make test")
@@ -229,10 +251,10 @@ def main(
         typer.echo("  - make inspect")
         typer.echo("  - make validate")
 
-    if max(phases) < 15:
-        remaining = list(range(max(phases) + 1, 16))
+    if max(phases) < 16:
+        remaining = list(range(max(phases) + 1, 17))
         typer.echo(f"\nTo add more phases ({', '.join(str(n) for n in remaining)}):")
-        typer.echo(f"  python run/bootstrap.py --app-name {app_name} --output-dir {root} --phase {max(phases)+1}-15")
+        typer.echo(f"  python run/bootstrap.py --app-name {app_name} --output-dir {root} --phase {max(phases)+1}-16")
         typer.echo("\nOr review the phase spec before building:")
         typer.echo(f"  python resolver.py --bootstrap {max(phases)+1}")
 

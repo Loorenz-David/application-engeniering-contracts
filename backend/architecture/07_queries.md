@@ -154,12 +154,12 @@ async def list_records(ctx: ServiceContext) -> dict:
             instances=page,
             has_more=has_more,
             date_attr="created_at",
-            id_attr="id",
+            id_attr="client_id",
         ),
     }
 ```
 
-The pagination cursor may use the internal `id` as a stable tie-breaker — cursors are opaque. Do not expose the internal `id` as a resource identifier in the serialized response.
+The pagination cursor uses `client_id` as the stable tie-breaker alongside `created_at`. Cursors are opaque, but they still must not depend on a hidden integer identifier.
 
 ---
 
@@ -216,13 +216,13 @@ def build_record_query(ctx: ServiceContext, params: dict | None = None):
         stmt = stmt.where(Record.created_at >= parse_date(after))
 
     if after_cursor := params.get("after_cursor"):
-        date, id_ = decode_cursor(after_cursor)
+        date, client_id = decode_cursor(after_cursor)
         stmt = stmt.where(
             (Record.created_at < date) |
-            ((Record.created_at == date) & (Record.id < id_))
+            ((Record.created_at == date) & (Record.client_id < client_id))
         )
 
-    return stmt.order_by(Record.created_at.desc(), Record.id.desc())
+    return stmt.order_by(Record.created_at.desc(), Record.client_id.desc())
 ```
 
 This isolates filter logic from pagination logic and keeps `list_records` readable.
@@ -250,5 +250,5 @@ See [46_serialization.md](46_serialization.md) for the full serialization contra
 **Rules:**
 - Serializers are pure functions — they do not query the database.
 - Serializers use `isoformat()` for all datetime fields. Never return a raw `datetime` object.
-- Never expose internal DB `id` in public API responses. Use `client_id`.
+- Never introduce internal DB `id` fields in public API responses. Use `client_id`.
 - Never return a raw ORM instance from a query. Always serialize before returning.

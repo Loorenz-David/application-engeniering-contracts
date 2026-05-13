@@ -42,7 +42,7 @@ import enum
 class RoleNameEnum(enum.Enum):
     """
     Application-defined role names. Rename/add values to match your domain.
-    The first value (id=1 equivalent by convention) is always the highest-privilege role.
+    The first value in seed order is always the highest-privilege role.
     """
     ADMIN = "admin"
     MEMBER = "member"
@@ -60,13 +60,13 @@ class HttpMethodEnum(enum.Enum):
 
 ## Models
 
-All models in this system inherit from `IdentityMixin` (`models/base/identity.py`), which provides `id` (PK) and `client_id` (UUID string). See [03_models.md](03_models.md).
+All addressable models in this system inherit from `IdentityMixin` (`models/base/identity.py`), which provides `client_id` as the primary key. See [03_models.md](03_models.md).
 
 ### Core role tables
 
 ```python
 # models/tables/roles/role.py
-from sqlalchemy import Integer, ForeignKey
+from sqlalchemy import String, ForeignKey
 from sqlalchemy import Enum as SAEnum
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from my_app.models import db
@@ -83,15 +83,13 @@ class Role(IdentityMixin, db.Model):
         index=True,
     )
 
-    ui_group_id: Mapped[int | None] = mapped_column(
-        Integer, ForeignKey("ui_group_permissions.id"), nullable=True
+    ui_group_id: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("ui_group_permissions.client_id"), nullable=True
     )
-    backend_group_id: Mapped[int | None] = mapped_column(
-        Integer, ForeignKey("backend_group_permissions.id"), nullable=True
+    backend_group_id: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("backend_group_permissions.client_id"), nullable=True
     )
 
-    # Relationships
-    users: Mapped[list["User"]] = relationship("User", back_populates="role")
     ui_permissions: Mapped["UIGroupPermissions | None"] = relationship(
         "UIGroupPermissions", foreign_keys=[ui_group_id]
     )
@@ -99,6 +97,8 @@ class Role(IdentityMixin, db.Model):
         "BackendGroupPermissions", foreign_keys=[backend_group_id]
     )
 ```
+
+`Role` is a global permission tier. It is never assigned directly to `User`. A user receives permissions only through the active workspace membership path: `WorkspaceMembership.workspace_role -> WorkspaceRole.role -> Role`.
 
 ```python
 # models/tables/roles/ui_group_permissions.py
@@ -108,11 +108,10 @@ from my_app.models import db
 from my_app.models.base.identity import IdentityMixin
 
 
-class UIGroupPermissions(db.Model):
+class UIGroupPermissions(IdentityMixin, db.Model):
+    CLIENT_ID_PREFIX = "uig"
     __tablename__ = "ui_group_permissions"
 
-    id: Mapped[int] = mapped_column(__import__("sqlalchemy").Integer, primary_key=True)
-    client_id: Mapped[str] = mapped_column(String(64), nullable=False, unique=True, index=True)
     name: Mapped[str] = mapped_column(String(128), nullable=False, unique=True)
 
     app_permissions: Mapped[list["AppPermission"]] = relationship(
@@ -134,16 +133,18 @@ class UIGroupPermissions(db.Model):
 
 ```python
 # models/tables/roles/backend_group_permissions.py
-from sqlalchemy import String, Integer
+from sqlalchemy import String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from my_app.models import db
 
 
-class BackendGroupPermissions(db.Model):
+from my_app.models.base.identity import IdentityMixin
+
+
+class BackendGroupPermissions(IdentityMixin, db.Model):
+    CLIENT_ID_PREFIX = "bkg"
     __tablename__ = "backend_group_permissions"
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    client_id: Mapped[str] = mapped_column(String(64), nullable=False, unique=True, index=True)
     name: Mapped[str] = mapped_column(String(128), nullable=False, unique=True)
 
     backend_permissions: Mapped[list["BackendPermission"]] = relationship(
@@ -155,21 +156,23 @@ class BackendGroupPermissions(db.Model):
 
 ```python
 # models/tables/roles/backend_permission.py
-from sqlalchemy import Integer, ForeignKey
+from sqlalchemy import String, ForeignKey
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from my_app.models import db
 
 
-class BackendPermission(db.Model):
+from my_app.models.base.identity import IdentityMixin
+
+
+class BackendPermission(IdentityMixin, db.Model):
+    CLIENT_ID_PREFIX = "bkp"
     __tablename__ = "backend_permissions"
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-
-    backend_group_id: Mapped[int] = mapped_column(
-        Integer, ForeignKey("backend_group_permissions.id"), nullable=False, index=True
+    backend_group_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("backend_group_permissions.client_id"), nullable=False, index=True
     )
-    endpoint_id: Mapped[int] = mapped_column(
-        Integer, ForeignKey("endpoints.id"), nullable=False, index=True
+    endpoint_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("endpoints.client_id"), nullable=False, index=True
     )
 
     backend_group: Mapped["BackendGroupPermissions"] = relationship(
@@ -180,20 +183,23 @@ class BackendPermission(db.Model):
 
 ```python
 # models/tables/roles/app_permission.py
-from sqlalchemy import Integer, ForeignKey
+from sqlalchemy import String, ForeignKey
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from my_app.models import db
 
 
-class AppPermission(db.Model):
+from my_app.models.base.identity import IdentityMixin
+
+
+class AppPermission(IdentityMixin, db.Model):
+    CLIENT_ID_PREFIX = "app"
     __tablename__ = "app_permissions"
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    ui_group_id: Mapped[int] = mapped_column(
-        Integer, ForeignKey("ui_group_permissions.id"), nullable=False, index=True
+    ui_group_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("ui_group_permissions.client_id"), nullable=False, index=True
     )
-    app_name_id: Mapped[int] = mapped_column(
-        Integer, ForeignKey("app_names.id"), nullable=False, index=True
+    app_name_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("app_names.client_id"), nullable=False, index=True
     )
 
     ui_group: Mapped["UIGroupPermissions"] = relationship(
@@ -202,7 +208,7 @@ class AppPermission(db.Model):
     app_name: Mapped["AppName"] = relationship("AppName")
 ```
 
-`PagePermission`, `ButtonPermission`, `ActionPermission`, and `QueryFilterPermission` follow the identical pattern — each has `id`, `ui_group_id` FK, and the respective name table FK.
+`PagePermission`, `ButtonPermission`, `ActionPermission`, and `QueryFilterPermission` follow the identical pattern — each uses `IdentityMixin`, a `ui_group_id` FK to `ui_group_permissions.client_id`, and the respective name table FK to `<name_table>.client_id`.
 
 ### Name / seed tables
 
@@ -210,16 +216,18 @@ These tables hold the defined permission atoms. Rows are seeded at deployment, n
 
 ```python
 # models/tables/roles/names/app_name.py
-from sqlalchemy import String, Integer
+from sqlalchemy import String
 from sqlalchemy.orm import Mapped, mapped_column
 from my_app.models import db
 
 
-class AppName(db.Model):
+from my_app.models.base.identity import IdentityMixin
+
+
+class AppName(IdentityMixin, db.Model):
+    CLIENT_ID_PREFIX = "apn"
     __tablename__ = "app_names"
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    client_id: Mapped[str] = mapped_column(String(64), nullable=False, unique=True, index=True)
     app: Mapped[str] = mapped_column(String(128), nullable=False, unique=True)
 ```
 
@@ -227,18 +235,20 @@ class AppName(db.Model):
 
 ```python
 # models/tables/roles/names/endpoints.py
-from sqlalchemy import String, Integer
+from sqlalchemy import String
 from sqlalchemy import Enum as SAEnum
 from sqlalchemy.orm import Mapped, mapped_column
 from my_app.models import db
 from my_app.models.tables.roles.enums import HttpMethodEnum
 
 
-class Endpoints(db.Model):
+from my_app.models.base.identity import IdentityMixin
+
+
+class Endpoints(IdentityMixin, db.Model):
+    CLIENT_ID_PREFIX = "endp"
     __tablename__ = "endpoints"
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    client_id: Mapped[str] = mapped_column(String(64), nullable=False, unique=True, index=True)
     endpoint: Mapped[str] = mapped_column(String(255), nullable=False)
     method: Mapped[HttpMethodEnum] = mapped_column(
         SAEnum(HttpMethodEnum, name="http_method_enum", create_type=True),
@@ -259,7 +269,6 @@ Name tables and endpoints are seeded once at deployment. Use a migration seed or
 
 ```python
 # services/commands/seed/seed_permissions.py
-import uuid
 from my_app.models import db
 from my_app.models.tables.roles.names.app_name import AppName
 from my_app.models.tables.roles.names.page_name import PageName
@@ -301,7 +310,7 @@ def _seed_apps(apps: list[str]) -> None:
     existing = {r.app for r in db.session.query(AppName).all()}
     for app in apps:
         if app not in existing:
-            db.session.add(AppName(client_id=str(uuid.uuid4()), app=app))
+            db.session.add(AppName(app=app))
 
 
 def _seed_endpoints(pairs: list[tuple[str, str]]) -> None:
@@ -312,7 +321,6 @@ def _seed_endpoints(pairs: list[tuple[str, str]]) -> None:
     for method_str, path in pairs:
         if (method_str, path) not in existing:
             db.session.add(Endpoints(
-                client_id=str(uuid.uuid4()),
                 endpoint=path,
                 method=HttpMethodEnum(method_str),
             ))
@@ -365,22 +373,24 @@ def resolve_permissions_for_role(role: "Role") -> dict:
 ```
 
 ```python
-def build_auth_response(user, *, role: "Role", app_scope: str, time_zone: str | None = None) -> dict:
-    permissions = resolve_permissions_for_role(role)
+def build_auth_response(user, *, workspace, membership: "WorkspaceMembership", app_scope: str) -> dict:
+    workspace_role = membership.workspace_role
+    permission_role = workspace_role.role
+    permissions = resolve_permissions_for_role(permission_role)
 
     claims = {
-        "user_id":       user.id,
-        "role_id":       role.id,
-        "role_client_id": role.client_id,
-        "role_name":     role.name.value,       # replaces base_role_id
-        "app_scope":     app_scope,
-        "time_zone":     time_zone or "UTC",
+        "user_id":           user.client_id,
+        "workspace_id":      workspace.client_id,
+        "workspace_role_id": workspace_role.client_id,
+        "role_name":         permission_role.name.value,
+        "app_scope":         app_scope,
+        "time_zone":         workspace.time_zone or "UTC",
         "backend_permissions": permissions["backend"],   # ["GET:/api/v1/records/", ...]
         "ui":            permissions["ui"],              # {"apps": [...], "pages": [...], ...}
     }
 
-    access_token  = create_access_token(identity=str(user.id), additional_claims=claims)
-    refresh_token = create_refresh_token(identity=str(user.id), additional_claims=claims)
+    access_token  = create_access_token(identity=user.client_id, additional_claims=claims)
+    refresh_token = create_refresh_token(identity=user.client_id, additional_claims=claims)
 
     return {
         "access_token":   access_token,
@@ -389,7 +399,7 @@ def build_auth_response(user, *, role: "Role", app_scope: str, time_zone: str | 
             "id":                 user.client_id,
             "email":              user.email,
             "name":               user.name,
-            "role":               role.name.value,
+            "role":               workspace_role.name,
             "backend_permissions": permissions["backend"],
             "ui":                  permissions["ui"],
         },
@@ -444,7 +454,7 @@ class BackendPermissionMiddleware(BaseHTTPMiddleware):
         return await call_next(request)
 ```
 
-> **Note on path matching:** The `request.path` for a route like `/api/v1/records/abc-123` will not match the seeded pattern `/api/v1/records/<client_id>`. Resolve this by normalizing the path before lookup — replace UUID/ID segments with `<client_id>`. Implement a `normalize_api_path(path: str) -> str` helper in `routers/utils/` that strips dynamic segments.
+> **Note on path matching:** The `request.path` for a route like `/api/v1/records/rec_01...` will not match the seeded pattern `/api/v1/records/<client_id>`. Resolve this by normalizing the path before lookup — replace `client_id`-shaped segments with `<client_id>`. Implement a `normalize_api_path(path: str) -> str` helper in `routers/utils/` that strips dynamic segments.
 
 Register it in `create_app()`:
 

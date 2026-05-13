@@ -49,19 +49,19 @@ One table = one file. File lives in `models/tables/<domain>/<table_name>.py`.
 ```python
 # models/tables/<domain>/record.py
 from datetime import datetime, timezone
-from sqlalchemy import String, Integer, ForeignKey, DateTime
+from sqlalchemy import String, ForeignKey, DateTime
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from my_app.models.base import Base
+from my_app.models.base.identity import IdentityMixin
 
 
-class Record(Base):
+class Record(IdentityMixin, Base):
+    CLIENT_ID_PREFIX = "rec"
     __tablename__ = "records"
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    workspace_id: Mapped[int] = mapped_column(
-        Integer, ForeignKey("workspaces.id"), nullable=False, index=True
+    workspace_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("workspaces.client_id"), nullable=False, index=True
     )
-    client_id: Mapped[str] = mapped_column(String(64), nullable=False, unique=True, index=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),
@@ -77,7 +77,8 @@ class Record(Base):
 - Use SQLAlchemy 2.x `Mapped` + `mapped_column` style. Never use the legacy `Column()` style for new tables.
 - All datetime columns use `DateTime(timezone=True)`. The engine is configured for UTC.
 - All foreign key columns are `nullable=False` unless there is an explicit domain reason for nullability.
-- Every user-facing table has a `client_id` column (prefixed ULID string) as the public identifier. See [40_identity.md](40_identity.md).
+- Every addressable table uses `IdentityMixin`; `client_id` is the prefixed ULID primary key. See [40_identity.md](40_identity.md).
+- Foreign key columns use `String(64)` and reference `<table>.client_id`. Keep semantic FK column names (`workspace_id`, `user_id`, `record_id`) even though they store `client_id` values.
 - Indexes go on columns used in `WHERE` clauses. Note the index in a migration comment if non-obvious.
 
 **Relationship rules:**
@@ -191,8 +192,8 @@ from sqlalchemy import UniqueConstraint
 class WorkspaceMembership(Base):
     __tablename__ = "workspace_memberships"
 
-    user_id:      Mapped[int] = mapped_column(Integer, ForeignKey("users.id"),      nullable=False)
-    workspace_id: Mapped[int] = mapped_column(Integer, ForeignKey("workspaces.id"), nullable=False)
+    user_id:      Mapped[str] = mapped_column(String(64), ForeignKey("users.client_id"),      nullable=False)
+    workspace_id: Mapped[str] = mapped_column(String(64), ForeignKey("workspaces.client_id"), nullable=False)
 
     __table_args__ = (
         UniqueConstraint("user_id", "workspace_id", name="uq_workspace_memberships_user_workspace"),

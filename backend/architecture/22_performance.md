@@ -16,7 +16,7 @@ An N+1 problem occurs when code issues one query to load N parent records, then 
 # N+1 bug — one query for records, then one per record to load children
 def serialize_record(record: Record) -> dict:
     return {
-        "id": record.id,
+        "client_id": record.client_id,
         "items": [serialize_item(i) for i in record.line_items],  # triggers N queries
     }
 
@@ -77,7 +77,7 @@ Avoid `SELECT *` by default. For heavy read paths (analytics, large list queries
 from sqlalchemy import select
 
 # When you only need IDs and statuses for a bulk operation
-stmt = select(Record.id, Record.state_id).where(
+stmt = select(Record.client_id, Record.state_id).where(
     Record.workspace_id == ctx.workspace_id,
     Record.category_id == category_id,
 )
@@ -158,7 +158,7 @@ Cache keys always include the workspace ID. Never cache data that crosses worksp
 | What to cache | TTL | Key pattern |
 |---|---|---|
 | Pending notifications | 48h | `{prefix}:notification:pending:{workspace_id}` |
-| Expensive computation result | 5m | `{prefix}:{domain}:result:{entity_id}` |
+| Expensive computation result | 5m | `{prefix}:{domain}:result:{entity_client_id}` |
 | AI tool response for idempotency | 30d | `{prefix}:ai:proposal:{workspace_id}:{client_id}` |
 
 **Never cache:** Authentication data, permission checks, financial transactions, or anything that must be consistent with the DB in real time.

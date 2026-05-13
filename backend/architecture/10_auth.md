@@ -12,7 +12,7 @@ Claims stored in the JWT:
     "username":          "john.doe",         # user.username — used by presence broadcasting
     "workspace_id":      "ws_01ARZ...",      # workspace.client_id
     "workspace_role_id": "wsr_01ARZ...",     # workspace_role.client_id
-    "role_name":         "admin",            # base Role.name — used by require_roles()
+    "role_name":         "admin",            # permission Role.name via active workspace membership
     "app_scope":         "admin",            # surface scope: "admin" | "field" | "client"
     "time_zone":         "America/New_York",
 
@@ -56,7 +56,7 @@ MEMBER = RoleNameEnum.MEMBER.value  # "member"
 FIELD  = RoleNameEnum.FIELD.value   # "field"
 ```
 
-Role names come from `RoleNameEnum` and are baked into the JWT as `role_name`. The `require_roles` dependency checks this string against the allowed list.
+Role names come from `RoleNameEnum` through the active membership (`WorkspaceMembership → WorkspaceRole → Role`) and are baked into the JWT as `role_name`. The `require_roles` dependency checks this string against the allowed list.
 
 ---
 
@@ -262,8 +262,8 @@ async def build_auth_response(
     app_scope: str,
 ) -> dict:
     workspace_role = membership.workspace_role
-    base_role      = workspace_role.role
-    permissions    = resolve_permissions_for_role(base_role)
+    permission_role = workspace_role.role
+    permissions     = resolve_permissions_for_role(permission_role)
 
     now = datetime.now(timezone.utc)
 
@@ -272,7 +272,7 @@ async def build_auth_response(
         "username":            user.username,
         "workspace_id":        workspace.client_id,
         "workspace_role_id":   workspace_role.client_id,
-        "role_name":           base_role.name.value,
+        "role_name":           permission_role.name.value,
         "app_scope":           app_scope,
         "time_zone":           workspace.time_zone or "UTC",
         "backend_permissions": permissions["backend"],

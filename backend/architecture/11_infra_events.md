@@ -73,7 +73,7 @@ class ConversationRoomEvent(Event):
 
 **Rules:**
 - `event_name` follows `<domain>:<verb>` convention: `invoice:updated`, `message:created`, `case:state-changed`. The colon matches the frontend's `ServerToClientEvents` type exactly — no translation at the socket layer.
-- `client_id` is always the public identifier of the changed entity — never an internal DB integer ID.
+- `client_id` is always the identifier of the changed entity — never an alternate integer ID.
 - `extra` carries optional context beyond the `client_id` (e.g. `{"new_status": "paid"}`). Keep it minimal — the frontend fetches full data via REST.
 - Events are immutable after creation. Handlers must not modify them.
 
@@ -409,4 +409,4 @@ Adding a new key to `extra` is non-breaking. Renaming or removing a key is break
 - **Dispatch is always after commit.** `event_bus.dispatch(pending_events)` is always the line after `async with ctx.session.begin()` exits, never inside it.
 - **One handler = one side effect.** Do not combine socket push and email send in one handler.
 - **Slow or unreliable work belongs in a task worker.** Handlers must return in milliseconds. Enqueue a task for anything that makes network calls.
-- **`client_id` is always the public identifier.** Never put internal DB integer IDs in events.
+- **`client_id` is always the entity identifier.** Never put alternate integer IDs in events.

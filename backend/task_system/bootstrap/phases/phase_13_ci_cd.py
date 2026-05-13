@@ -6,7 +6,7 @@ from bootstrap.writer import append_once, touch_file as _touch, write_file as _w
 
 
 def _phase13_ci_cd(root: Path, a: str, force: bool) -> None:
-    typer.echo("\n-- Phase 13 - CI/CD ------------------------------------------------")
+    typer.echo("\n-- Phase 14 - CI/CD ------------------------------------------------")
 
     _touch(root / ".github" / "workflows" / ".gitkeep", force=force)
 

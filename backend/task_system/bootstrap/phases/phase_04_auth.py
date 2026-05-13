@@ -47,7 +47,6 @@ def resolve_permissions_for_role(role) -> dict:
 
     _touch(root / a / "models" / "tables" / "roles" / "__init__.py", force=force)
     _write(root / a / "models" / "tables" / "roles" / "role.py", f"""\
-from sqlalchemy import Boolean
 from sqlalchemy import Enum as SAEnum
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -66,10 +65,9 @@ class Role(IdentityMixin, Base):
         unique=True,
         index=True,
     )
-    is_workspace_role: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
 """, force=force)
     _write(root / a / "models" / "tables" / "roles" / "workspace_role.py", f"""\
-from sqlalchemy import ForeignKey, Integer, JSON, UniqueConstraint
+from sqlalchemy import Boolean, ForeignKey, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from {a}.models.base.base import Base
@@ -80,12 +78,14 @@ class WorkspaceRole(IdentityMixin, Base):
     CLIENT_ID_PREFIX = "wsr"
     __tablename__ = "workspace_roles"
     __table_args__ = (
-        UniqueConstraint("workspace_id", "role_id", name="uq_workspace_roles_workspace_role"),
+        UniqueConstraint("workspace_id", "name", name="uq_workspace_roles_workspace_name"),
     )
 
-    workspace_id: Mapped[int] = mapped_column(Integer, ForeignKey("workspaces.id", deferrable=True), nullable=False, index=True)
-    role_id: Mapped[int] = mapped_column(Integer, ForeignKey("roles.id", deferrable=True), nullable=False, index=True)
-    extra_claims: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    workspace_id: Mapped[str] = mapped_column(String(64), ForeignKey("workspaces.client_id", deferrable=True), nullable=False, index=True)
+    role_id: Mapped[str] = mapped_column(String(64), ForeignKey("roles.client_id", deferrable=True), nullable=False, index=True)
+    name: Mapped[str] = mapped_column(String(64), nullable=False)
+    description: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    is_system: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
     role: Mapped["Role"] = relationship("Role")
 """, force=force)
@@ -94,7 +94,7 @@ class WorkspaceRole(IdentityMixin, Base):
     _write(root / a / "models" / "tables" / "workspaces" / "workspace.py", f"""\
 from datetime import datetime, timezone
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String
+from sqlalchemy import DateTime, ForeignKey, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from {a}.models.base.base import Base
@@ -107,7 +107,7 @@ class Workspace(IdentityMixin, Base):
 
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     time_zone: Mapped[str] = mapped_column(String(64), nullable=False, default="UTC")
-    created_by_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("users.id", deferrable=True), nullable=True)
+    created_by_id: Mapped[str | None] = mapped_column(String(64), ForeignKey("users.client_id", deferrable=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),
@@ -115,8 +115,9 @@ class Workspace(IdentityMixin, Base):
     )
 """, force=force)
     _write(root / a / "models" / "tables" / "workspaces" / "workspace_membership.py", f"""\
-from sqlalchemy import ForeignKey, Integer, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, ForeignKey, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+from datetime import datetime, timezone
 
 from {a}.models.base.base import Base
 from {a}.models.base.identity import IdentityMixin
@@ -129,9 +130,11 @@ class WorkspaceMembership(IdentityMixin, Base):
         UniqueConstraint("user_id", "workspace_id", name="uq_workspace_memberships_user_workspace"),
     )
 
-    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id", deferrable=True), nullable=False, index=True)
-    workspace_id: Mapped[int] = mapped_column(Integer, ForeignKey("workspaces.id", deferrable=True), nullable=False, index=True)
-    workspace_role_id: Mapped[int] = mapped_column(Integer, ForeignKey("workspace_roles.id", deferrable=True), nullable=False)
+    user_id: Mapped[str] = mapped_column(String(64), ForeignKey("users.client_id", deferrable=True), nullable=False, index=True)
+    workspace_id: Mapped[str] = mapped_column(String(64), ForeignKey("workspaces.client_id", deferrable=True), nullable=False, index=True)
+    workspace_role_id: Mapped[str] = mapped_column(String(64), ForeignKey("workspace_roles.client_id", deferrable=True), nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    joined_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
 
     workspace_role: Mapped["WorkspaceRole"] = relationship("WorkspaceRole")
 """, force=force)
@@ -246,11 +249,13 @@ from uuid import uuid4
 import jwt
 from passlib.context import CryptContext
 from sqlalchemy import select
+from sqlalchemy.orm import selectinload
 
 from {a}.config import settings
 from {a}.domain.roles.permissions import resolve_permissions_for_role
 from {a}.errors.permissions import PermissionDenied
 from {a}.models.tables.users.user import User
+from {a}.models.tables.roles.workspace_role import WorkspaceRole
 from {a}.models.tables.workspaces.workspace import Workspace
 from {a}.models.tables.workspaces.workspace_membership import WorkspaceMembership
 from {a}.services.context import ServiceContext
@@ -271,7 +276,12 @@ async def sign_in_user(ctx: ServiceContext) -> dict:
         raise PermissionDenied("Invalid credentials.")
 
     membership_result = await ctx.session.execute(
-        select(WorkspaceMembership).where(WorkspaceMembership.user_id == user.id)
+        select(WorkspaceMembership)
+        .options(selectinload(WorkspaceMembership.workspace_role).selectinload(WorkspaceRole.role))
+        .where(
+            WorkspaceMembership.user_id == user.client_id,
+            WorkspaceMembership.is_active.is_(True),
+        )
     )
     membership = membership_result.scalar_one_or_none()
     if membership is None:
@@ -282,15 +292,16 @@ async def sign_in_user(ctx: ServiceContext) -> dict:
 
 
 def build_auth_response(user: User, *, workspace: Workspace, membership: WorkspaceMembership, app_scope: str) -> dict:
-    base_role = membership.workspace_role.role
-    permissions = resolve_permissions_for_role(base_role)
+    workspace_role = membership.workspace_role
+    permission_role = workspace_role.role
+    permissions = resolve_permissions_for_role(permission_role)
     now = datetime.now(timezone.utc)
     claims = {{
         "user_id": user.client_id,
         "username": user.username,
         "workspace_id": workspace.client_id,
-        "workspace_role_id": membership.workspace_role.client_id,
-        "role_name": base_role.name.value,
+        "workspace_role_id": workspace_role.client_id,
+        "role_name": permission_role.name.value,
         "app_scope": app_scope,
         "time_zone": workspace.time_zone or "UTC",
         "backend_permissions": permissions["backend"],
@@ -313,7 +324,7 @@ def build_auth_response(user: User, *, workspace: Workspace, membership: Workspa
             "client_id": user.client_id,
             "email": user.email,
             "username": user.username,
-            "role": base_role.name.value,
+            "role": workspace_role.name,
             "backend_permissions": permissions["backend"],
             "ui": permissions["ui"],
         }},

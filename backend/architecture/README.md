@@ -138,7 +138,7 @@ Minimum read set for a single, scoped task. For compound tasks, combine rows.
 | Restore a soft-deleted entity | [25_soft_delete.md](25_soft_delete.md) | 06, 07 |
 | Write or modify a migration | [30_migrations.md](30_migrations.md) | 03 |
 | Add a new state transition | [08_domain.md](08_domain.md) | 06, 03 |
-| Resolve an entity by public or internal ID | [38_identity_resolution.md](38_identity_resolution.md) | 03, 06, 07, 09 |
+| Resolve an entity by `client_id` | [38_identity_resolution.md](38_identity_resolution.md) | 03, 06, 07, 09 |
 | Track cascading changes in a complex command | [39_work_context.md](39_work_context.md) | 04, 06, 08, 38 |
 | Handle concurrent writes / prevent race conditions | [32_concurrency.md](32_concurrency.md) | 06 |
 | Make a command idempotent | [32_concurrency.md](32_concurrency.md) | 06, 16 |
@@ -443,7 +443,7 @@ These are invariants. They cannot be relaxed. If a task seems to require breakin
 7. **Every public function has a return type annotation.** No exceptions.
 8. **`DomainError` and its subclasses are the only errors that cross layer boundaries.** Never let `SQLAlchemyError`, `KeyError`, or `AttributeError` bubble to the router.
 9. **Never alter the database manually.** All schema changes go through Alembic migrations.
-10. **Public APIs identify resources by `client_id`, not internal `id`.** Use the identity resolver (38) to translate between them with workspace and soft-delete filtering.
+10. **Public APIs and database relations identify resources by `client_id`.** Use the identity resolver (38) for workspace and soft-delete-safe lookup.
 11. **Documentation is updated in the same PR as the code.** An endpoint without a shape in `docs/domains/<domain>/api.md` is an incomplete PR. An outdated doc is a bug.
 12. **Events use `<domain>:<verb>` naming with a colon separator.** This must match the frontend's `ServerToClientEvents` type exactly — the event type string is the socket event name.
 
@@ -466,7 +466,7 @@ These are invariants. They cannot be relaxed. If a task seems to require breakin
 | 06 | [06_commands.md](06_commands.md) | Write operations — structure, transaction boundaries, event emission |
 | 07 | [07_queries.md](07_queries.md) | Read operations — structure, pagination, serialization |
 | 08 | [08_domain.md](08_domain.md) | Pure domain logic — guards, state machines, calculations |
-| 38 | [38_identity_resolution.md](38_identity_resolution.md) | Public `client_id` vs internal `id`, workspace/soft-delete-safe lookup |
+| 38 | [38_identity_resolution.md](38_identity_resolution.md) | `client_id` lookup with workspace/soft-delete-safe resolution |
 | 39 | [39_work_context.md](39_work_context.md) | `WorkContext` for complex writes — touched entities, cascading changes, response assembly |
 
 ### Transport layer
@@ -575,7 +575,7 @@ my_app/
 ├── models/                        # → 03, 25 (soft delete), 30 (migrations)
 │   ├── __init__.py                # db instance + all table imports
 │   ├── base/
-│   │   ├── identity.py            # IdentityMixin (id + client_id) → 40
+│   │   ├── identity.py            # IdentityMixin (client_id primary key) → 40
 │   │   ├── history_record.py      # HistoryRecord mixin → 41
 │   │   └── event.py               # Event mixin → 42
 │   └── tables/

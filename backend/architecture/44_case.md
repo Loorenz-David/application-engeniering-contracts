@@ -4,7 +4,7 @@
 
 The `Case` architecture provides a polymorphic case-management system for logistics-focused applications. Six models cover the full lifecycle: a type registry (`CaseType`), the case itself (`Case`), a polymorphic entity-link table (`CaseLink`), participants (`CaseParticipant`), conversation threads (`CaseConversation`), and rich-content messages (`CaseConversationMessage`).
 
-`CaseLink` follows the same polymorphic-association pattern as `ImageLink` (see [43_image.md](43_image.md)): `(entity_type, entity_id)` without a DB-level FK constraint, allowing any entity to be linked to a case with a semantic role — no schema change required when adding new entity types. `CaseLinkEntityTypeEnum` is the single source of truth for supported entity types.
+`CaseLink` follows the same polymorphic-association pattern as `ImageLink` (see [43_image.md](43_image.md)): `(entity_type, entity_client_id)` without a DB-level FK constraint, allowing any entity to be linked to a case with a semantic role — no schema change required when adding new entity types. `CaseLinkEntityTypeEnum` is the single source of truth for supported entity types.
 
 ---
 
@@ -82,9 +82,9 @@ async def send_message(ctx: ServiceContext) -> dict:
 
     async with ctx.session.begin():
         conversation = await _resolve_conversation(ctx.session, request.conversation_client_id)
-        seq          = await _next_message_seq(ctx.session, conversation.id)
+        seq          = await _next_message_seq(ctx.session, conversation.client_id)
         message      = CaseConversationMessage(
-            case_conversation_id=conversation.id,
+            case_conversation_id=conversation.client_id,
             message_seq=seq,
             created_by_id=ctx.user_id,
             content=request.content,
@@ -196,8 +196,8 @@ class Case(IdentityMixin, HistoryRecord, db.Model):
     )
 
     @declared_attr
-    def created_by_id(cls) -> Mapped[int]:
-        return mapped_column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    def created_by_id(cls) -> Mapped[str]:
+        return mapped_column(String(64), ForeignKey("users.client_id"), nullable=False, index=True)
 
     state: Mapped[CaseStateEnum] = mapped_column(
         SAEnum(CaseStateEnum, name="case_state_enum", create_type=True),
@@ -206,8 +206,8 @@ class Case(IdentityMixin, HistoryRecord, db.Model):
         index=True,
     )
 
-    case_type_id: Mapped[int | None] = mapped_column(
-        Integer, ForeignKey("case_types.id"), nullable=True, index=True
+    case_type_id: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("case_types.client_id"), nullable=True, index=True
     )
 
     type_label:          Mapped[str | None] = mapped_column(String(128), nullable=True)
@@ -223,7 +223,7 @@ class Case(IdentityMixin, HistoryRecord, db.Model):
     links:         Mapped[list["CaseLink"]]             = relationship("CaseLink",        foreign_keys="[CaseLink.case_id]",          back_populates="case")
 ```
 
-`HistoryRecord` provides `updated_at` and `updated_by_id` (FK to users). `type_label` is a free-text snapshot — populated from `CaseType.name` when `case_type_id` is supplied, but accepts any string, enabling case types not registered in `case_types`.
+`HistoryRecord` provides `updated_at` and `updated_by_id` (FK to `users.client_id`). `type_label` is a free-text snapshot — populated from `CaseType.name` when `case_type_id` is supplied, but accepts any string, enabling case types not registered in `case_types`.
 
 `conversations_count` and `messages_count` are denormalized counters updated by `create_conversation`, `send_message`, and `soft_delete_message`. These are the authoritative display counts — never derived from a `COUNT(*)`. `messages_count` on `Case` is the total across all conversations; `messages_count` on `CaseConversation` is per-thread.
 
@@ -233,7 +233,7 @@ class Case(IdentityMixin, HistoryRecord, db.Model):
 
 ```python
 from datetime import datetime, timezone
-from sqlalchemy import Integer, DateTime, ForeignKey, UniqueConstraint
+from sqlalchemy import String, DateTime, ForeignKey, UniqueConstraint
 from sqlalchemy import Enum as SAEnum
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from my_app.models.base.identity import IdentityMixin
@@ -244,11 +244,11 @@ class CaseLink(IdentityMixin, db.Model):
     CLIENT_ID_PREFIX = "clk"
     __tablename__    = "case_links"
     __table_args__   = (
-        UniqueConstraint("case_id", "entity_type", "entity_id", name="uq_case_link_case_entity"),
+        UniqueConstraint("case_id", "entity_type", "entity_client_id", name="uq_case_link_case_entity"),
     )
 
-    case_id: Mapped[int] = mapped_column(
-        Integer, ForeignKey("cases.id"), nullable=False, index=True
+    case_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("cases.client_id"), nullable=False, index=True
     )
 
     entity_type: Mapped[CaseLinkEntityTypeEnum] = mapped_column(
@@ -257,7 +257,7 @@ class CaseLink(IdentityMixin, db.Model):
         index=True,
     )
 
-    entity_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    entity_client_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
 
     role: Mapped[CaseLinkRoleEnum] = mapped_column(
         SAEnum(CaseLinkRoleEnum, name="case_link_role_enum", create_type=True),
@@ -273,7 +273,7 @@ class CaseLink(IdentityMixin, db.Model):
     case: Mapped["Case"] = relationship("Case", foreign_keys=[case_id], back_populates="links")
 ```
 
-No DB-level FK on `entity_id` — same design as `ImageLink`. The handler must verify entity existence before calling `link_entity`. `entity_type` uses `create_type=False` because `CaseType` owns the Postgres enum.
+No DB-level FK on `entity_client_id` — same design as `ImageLink`. The handler must verify entity existence before calling `link_entity`. `entity_type` uses `create_type=False` because `CaseType` owns the Postgres enum.
 
 ---
 
@@ -281,7 +281,7 @@ No DB-level FK on `entity_id` — same design as `ImageLink`. The handler must v
 
 ```python
 from datetime import datetime, timezone
-from sqlalchemy import Integer, DateTime, ForeignKey, UniqueConstraint
+from sqlalchemy import String, Integer, DateTime, ForeignKey, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from my_app.models.base.identity import IdentityMixin
 
@@ -293,12 +293,12 @@ class CaseParticipant(IdentityMixin, db.Model):
         UniqueConstraint("case_id", "user_id", name="uq_case_participant"),
     )
 
-    case_id: Mapped[int] = mapped_column(
-        Integer, ForeignKey("cases.id"), nullable=False, index=True
+    case_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("cases.client_id"), nullable=False, index=True
     )
 
-    user_id: Mapped[int] = mapped_column(
-        Integer, ForeignKey("users.id"), nullable=False, index=True
+    user_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("users.client_id"), nullable=False, index=True
     )
 
     last_read_message_seq: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
@@ -321,7 +321,7 @@ class CaseParticipant(IdentityMixin, db.Model):
 
 ```python
 from datetime import datetime, timezone
-from sqlalchemy import Integer, DateTime, ForeignKey
+from sqlalchemy import String, Integer, DateTime, ForeignKey
 from sqlalchemy import Enum as SAEnum
 from sqlalchemy.orm import Mapped, mapped_column, declared_attr, relationship
 from my_app.models.base.identity import IdentityMixin
@@ -332,8 +332,8 @@ class CaseConversation(IdentityMixin, db.Model):
     CLIENT_ID_PREFIX = "ccv"
     __tablename__    = "case_conversations"
 
-    case_id: Mapped[int] = mapped_column(
-        Integer, ForeignKey("cases.id"), nullable=False, index=True
+    case_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("cases.client_id"), nullable=False, index=True
     )
 
     created_at: Mapped[datetime] = mapped_column(
@@ -343,8 +343,8 @@ class CaseConversation(IdentityMixin, db.Model):
     )
 
     @declared_attr
-    def created_by_id(cls) -> Mapped[int]:
-        return mapped_column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    def created_by_id(cls) -> Mapped[str]:
+        return mapped_column(String(64), ForeignKey("users.client_id"), nullable=False, index=True)
 
     state: Mapped[CaseStateEnum] = mapped_column(
         SAEnum(CaseStateEnum, name="case_state_enum", create_type=False),
@@ -374,7 +374,7 @@ class CaseConversation(IdentityMixin, db.Model):
 
 ```python
 from datetime import datetime, timezone
-from sqlalchemy import Integer, Boolean, DateTime, Text, ForeignKey, UniqueConstraint
+from sqlalchemy import String, Integer, Boolean, DateTime, Text, ForeignKey, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, declared_attr, relationship
 from my_app.models.base.identity import IdentityMixin
@@ -387,8 +387,8 @@ class CaseConversationMessage(IdentityMixin, db.Model):
         UniqueConstraint("case_conversation_id", "message_seq", name="uq_message_seq"),
     )
 
-    case_conversation_id: Mapped[int] = mapped_column(
-        Integer, ForeignKey("case_conversations.id"), nullable=False, index=True
+    case_conversation_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("case_conversations.client_id"), nullable=False, index=True
     )
 
     message_seq: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -400,8 +400,8 @@ class CaseConversationMessage(IdentityMixin, db.Model):
     )
 
     @declared_attr
-    def created_by_id(cls) -> Mapped[int]:
-        return mapped_column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    def created_by_id(cls) -> Mapped[str]:
+        return mapped_column(String(64), ForeignKey("users.client_id"), nullable=False, index=True)
 
     content:    Mapped[list | dict] = mapped_column(JSONB, nullable=False)
     plain_text: Mapped[str]         = mapped_column(Text,  nullable=False, default="")
@@ -444,10 +444,10 @@ from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 
-async def _next_message_seq(session: AsyncSession, conversation_id: int) -> int:
+async def _next_message_seq(session: AsyncSession, conversation_id: str) -> int:
     stmt = (
         update(CaseConversation)
-        .where(CaseConversation.id == conversation_id)
+        .where(CaseConversation.client_id == conversation_id)
         .values(last_message_seq=CaseConversation.last_message_seq + 1)
         .returning(CaseConversation.last_message_seq)
     )
@@ -481,14 +481,14 @@ class CaseResult:
     conversations_count:  int
     messages_count:       int
     created_at:           str
-    created_by_id:        int
+    created_by_id:        str
 
 
 @dataclass
 class CaseLinkResult:
     client_id:   str
     entity_type: str
-    entity_id:   int
+    entity_client_id: str
     role:        str
     created_at:  str
 
@@ -496,7 +496,7 @@ class CaseLinkResult:
 @dataclass
 class CaseParticipantResult:
     client_id:             str
-    user_id:               int
+    user_id:               str
     last_read_message_seq: int
     joined_at:             str
 
@@ -531,8 +531,8 @@ class CaseConversationMessageResult:
 
 ```python
 # incoming_data keys:
-#   created_by_id (int)
-#   case_type_id  (int | None)   — optional FK to case_types.id
+#   created_by_id (str)
+#   case_type_id  (str | None)   — optional FK to case_types.client_id
 #   type_label    (str | None)   — populated from CaseType.name if omitted and case_type_id provided
 #
 # Resolves CaseType when case_type_id is given; snapshots CaseType.name into type_label.
@@ -544,8 +544,8 @@ class CaseConversationMessageResult:
 ```python
 # incoming_data keys:
 #   case_client_id (str)
-#   updated_by_id  (int)
-#   case_type_id   (int | None)  — key presence drives update; null clears the FK
+#   updated_by_id  (str)
+#   case_type_id   (str | None)  — key presence drives update; null clears the FK
 #   type_label     (str | None)  — key presence drives update; auto-populated from
 #                                  CaseType.name when case_type_id is set without a label
 #
@@ -561,7 +561,7 @@ class CaseConversationMessageResult:
 # incoming_data keys:
 #   case_client_id (str)
 #   new_state      (str)          — must be a valid CaseStateEnum value
-#   updated_by_id  (int)
+#   updated_by_id  (str)
 #
 # Updates Case.state, Case.updated_by_id, Case.updated_at.
 # Transition guards (e.g. RESOLVED → OPEN not allowed) belong in the handler layer.
@@ -574,11 +574,11 @@ class CaseConversationMessageResult:
 # incoming_data keys:
 #   case_client_id (str)
 #   entity_type    (str)   — must be a valid CaseLinkEntityTypeEnum value
-#   entity_id      (int)   — handler must verify entity existence before calling
+#   entity_client_id (str) — handler must verify entity existence before calling
 #   role           (str)   — must be a valid CaseLinkRoleEnum value
 #
 # Creates a CaseLink row. Raises DomainError if entity_type or role is invalid,
-# or if the (case_id, entity_type, entity_id) combination already exists.
+# or if the (case_id, entity_type, entity_client_id) combination already exists.
 # Returns CaseLinkResult.
 ```
 
@@ -596,7 +596,7 @@ class CaseConversationMessageResult:
 ```python
 # incoming_data keys:
 #   case_client_id (str)
-#   user_ids       (list[int])  — one or more users to add in a single transaction
+#   user_ids       (list[str])  — one or more user.client_id values to add in a single transaction
 #
 # Queries existing participants to filter out duplicates — no error on overlap.
 # Bulk-inserts only the net-new participants, then increments Case.participants_count
@@ -620,7 +620,7 @@ class CaseConversationMessageResult:
 ```python
 # incoming_data keys:
 #   case_client_id (str)
-#   created_by_id  (int)
+#   created_by_id  (str)
 #
 # Creates a new CaseConversation with state=OPEN, last_message_seq=0.
 # Returns CaseConversationResult.
@@ -631,7 +631,7 @@ class CaseConversationMessageResult:
 ```python
 # incoming_data keys:
 #   conversation_client_id (str)
-#   created_by_id          (int)
+#   created_by_id          (str)
 #   content                (list[dict])  — rich-text content blocks
 #   plain_text             (str)         — extracted plain text; handler extracts before calling
 #
@@ -691,12 +691,12 @@ class CaseConversationMessageResult:
 # incoming_data keys (all optional filters):
 #   state         (str | None)   — CaseStateEnum value
 #   entity_type   (str | None)   — filter via JOIN on CaseLink
-#   entity_id     (int | None)   — filter via JOIN on CaseLink
-#   created_by_id (int | None)
+#   entity_client_id (str | None) — filter via JOIN on CaseLink
+#   created_by_id    (str | None)
 #   limit         (int, default 50)
 #   offset        (int, default 0)
 #
-# When entity_type + entity_id are both provided, JOINs case_links to filter.
+# When entity_type + entity_client_id are both provided, JOINs case_links to filter.
 # Returns list[CaseResult].
 ```
 
@@ -742,7 +742,7 @@ class CaseConversationMessageResult:
 
 ```python
 # incoming_data keys:
-#   user_id                  (int)         — participant whose unread state is queried
+#   user_id                  (str)         — participant user.client_id whose unread state is queried
 #   conversation_client_ids  (list[str])   — optional; if omitted, returns all conversations
 #                                            where the user has at least one unread message
 #
@@ -793,7 +793,7 @@ Foundation services never call `get_jwt()`, never access `request`, and never ch
 
 Cases and case conversation messages support images via the `ImageLink` polymorphic pattern — **no new models are needed**. The `ImageLinkEntityTypeEnum` in `domain/images/enums.py` already carries `CASE` and `CASE_CONVERSATION_MESSAGE`, and `confirm_upload`'s `_ENTITY_EVENT_MAP` already maps these to their event types.
 
-The entire integration lives in the **handler layer**. The handler resolves the entity (existence + auth), then calls the existing image foundation services with `entity_type` and `entity_id` already populated. The image services have zero knowledge of cases.
+The entire integration lives in the **handler layer**. The handler resolves the entity (existence + auth), then calls the existing image foundation services with `entity_type` and `entity_client_id` already populated. The image services have zero knowledge of cases.
 
 ### Handler pattern
 
@@ -805,7 +805,7 @@ if not case:
 
 data = request.get_json() or {}
 data["entity_type"]   = "case"          # ImageLinkEntityTypeEnum.CASE.value
-data["entity_id"]     = case.id
+data["entity_client_id"] = case.client_id
 data["created_by_id"] = identity.get("user_id")
 
 outcome = run_service(generate_upload_url, ServiceContext(incoming_data=data, identity=identity))

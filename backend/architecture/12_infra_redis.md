@@ -89,7 +89,7 @@ REDIS_NOTIFICATION_TTL_SECONDS = int(os.environ.get("REDIS_NOTIFICATION_TTL_SECO
 For frequently updated entity states that are read by real-time clients or background workers:
 
 ```python
-ENTITY_STATE_KEY = "{prefix}:entity:state:{entity_id}"
+ENTITY_STATE_KEY = "{prefix}:entity:state:{entity_client_id}"
 TTL = app.config["REDIS_ENTITY_STATE_TTL_SECONDS"]
 
 redis_client.set(key, json.dumps({"status": status, "updated_at": ts}), ex=TTL)

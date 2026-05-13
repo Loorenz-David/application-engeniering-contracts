@@ -6,7 +6,7 @@ from bootstrap.writer import append_once, replace_once, touch_file as _touch, wr
 
 
 def _phase10_observability(root: Path, a: str, force: bool) -> None:
-    typer.echo("\n-- Phase 10 - Observability ----------------------------------------")
+    typer.echo("\n-- Phase 11 - Observability ----------------------------------------")
 
     _touch(root / a / "core" / "__init__.py", force=force)
     _touch(root / a / "core" / "logging" / "__init__.py", force=force)

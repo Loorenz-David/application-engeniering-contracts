@@ -2,21 +2,20 @@
 
 ## Definition
 
-Backend entities have two identifiers:
+Backend entities use one durable identifier:
 
 | Identifier | Owner | Visibility | Purpose |
 |---|---|---|---|
-| `id` | Database/backend | Internal only | Primary key, joins, internal jobs, cursor pagination |
-| `client_id` | Client or backend | Public API | Stable external identifier for routes, frontend cache keys, optimistic UI, events |
+| `client_id` | Backend generated, client visible | Database and public API | Primary key, FKs, routes, frontend cache keys, optimistic UI, events, jobs |
 
-The public API identifies resources by `client_id`. Internal service code may use `id` when it is already operating on trusted internal data. Commands and queries do not hand-roll lookup logic; they resolve references through a shared resolver.
+`client_id` is a prefixed ULID string provided by `IdentityMixin` (see [40_identity.md](40_identity.md)). There is no separate internal integer `id` for addressable entities. Commands and queries do not hand-roll lookup logic; they resolve references through a shared resolver so workspace scope and soft-delete filtering stay consistent.
 
 ```
 HTTP route path       /api/v1/records/<record_client_id>
         ↓
 Router               incoming_data["client_id"] = record_client_id
         ↓
-Request parser       RecordRef(client_id=...)
+Request parser       EntityRef(client_id=...)
         ↓
 Resolver             workspace_id + client_id + not deleted
         ↓
@@ -25,11 +24,9 @@ Service              receives ORM instance or raises NotFound
 
 ---
 
-## Public vs internal identifiers
+## Identifier Use
 
-### Public API
-
-Public HTTP routes use `client_id`:
+Public HTTP routes, workers, events, and internal service calls all use `client_id`.
 
 ```python
 @record_bp.route("/<string:record_client_id>", methods=["GET"])
@@ -41,17 +38,7 @@ def get_record_route(record_client_id: str):
     return run_service(get_record, ctx)
 ```
 
-Do not expose internal integer IDs as route identifiers.
-
-### Internal service calls
-
-Internal jobs, event handlers, and commands may use `id` when the value came from the database or a trusted internal event:
-
-```python
-record = resolve_record(ctx, EntityRef(id=record_id))
-```
-
-Never accept an internal `id` from an untrusted public request body.
+Never accept or expose an integer database ID for an addressable entity. If a table needs a cursor, use an explicit cursor field such as `created_at` plus `client_id`, not a hidden surrogate identifier.
 
 ---
 
@@ -68,14 +55,11 @@ from my_app.errors import ValidationFailed
 
 @dataclass(frozen=True)
 class EntityRef:
-    id: int | None = None
-    client_id: str | None = None
+    client_id: str
 
     def __post_init__(self) -> None:
-        if self.id is None and self.client_id is None:
-            raise ValidationFailed("Provide either id or client_id.")
-        if self.id is not None and self.client_id is not None:
-            raise ValidationFailed("Provide only one identifier.")
+        if not self.client_id:
+            raise ValidationFailed("client_id is required.")
 ```
 
 Request parsers create `EntityRef` objects:
@@ -103,13 +87,7 @@ class RecordCreateRequest(BaseModel):
     name: str
 ```
 
-Frontend create requests still send `client_id`; backend-only flows may omit it and let the command generate one.
-
-If an internal job needs `id`, build the ref explicitly from trusted data:
-
-```python
-ref = EntityRef(id=record_id)
-```
+Frontend create requests still send `client_id`; backend-only flows may omit it and let the model default generate one.
 
 ---
 
@@ -148,10 +126,7 @@ def resolve_entity(
     if hasattr(model, "is_deleted") and not include_deleted:
         query = query.filter(model.is_deleted == False)  # noqa: E712
 
-    if ref.client_id is not None:
-        query = query.filter(model.client_id == ref.client_id)
-    else:
-        query = query.filter(model.id == ref.id)
+    query = query.filter(model.client_id == ref.client_id)
 
     if for_update:
         query = query.with_for_update()
@@ -233,9 +208,7 @@ def resolve_entities(
     if not refs:
         return []
 
-    has_client_ids = [ref.client_id is not None for ref in refs]
-    if any(has_client_ids) and not all(has_client_ids):
-        raise ValidationFailed(f"Resolve {label} by either id or client_id, not both.")
+    keys = [ref.client_id for ref in refs]
 
     query: Query = db.session.query(model)
 
@@ -245,20 +218,13 @@ def resolve_entities(
     if hasattr(model, "is_deleted") and not include_deleted:
         query = query.filter(model.is_deleted == False)  # noqa: E712
 
-    if all(has_client_ids):
-        keys = [ref.client_id for ref in refs]
-        query = query.filter(model.client_id.in_(keys))
-        key_of = lambda instance: instance.client_id
-    else:
-        keys = [ref.id for ref in refs]
-        query = query.filter(model.id.in_(keys))
-        key_of = lambda instance: instance.id
+    query = query.filter(model.client_id.in_(keys))
 
     if for_update:
         query = query.with_for_update()
 
     found = query.all()
-    by_key = {key_of(instance): instance for instance in found}
+    by_key = {instance.client_id: instance for instance in found}
     missing = [key for key in keys if key not in by_key]
     if missing:
         raise NotFound(f"{label} not found: {missing[0]}")
@@ -298,12 +264,6 @@ class ArchiveRecordsRequest(BaseModel):
         return [EntityRef(client_id=client_id) for client_id in self.client_ids]
 ```
 
-Trusted internal jobs may pass internal IDs:
-
-```python
-refs = [EntityRef(id=record_id) for record_id in record_ids]
-```
-
 Batch mutation command pattern:
 
 ```python
@@ -327,22 +287,18 @@ The resolver preserves the input order in its return value. This keeps response 
 
 ## Create command behavior
 
-Create commands accept `client_id` for first-party entities. If `client_id` is missing in a non-frontend flow, the backend may generate one.
+Create commands accept optional `client_id` for first-party entities. If `client_id` is missing, the model default generates one.
 
 ```python
-from uuid import uuid4
-
-
-client_id = request.client_id or str(uuid4())
-
 record = Record(
-    client_id=client_id,
     workspace_id=ctx.workspace_id,
     name=request.name,
 )
+if request.client_id:
+    record.client_id = request.client_id
 ```
 
-Frontend-created records should always send `client_id` so optimistic navigation and cache seeding work. Backend-created records may generate it server-side.
+Frontend-created records should send `client_id` so optimistic navigation and cache seeding work. Backend-created records may rely on the model default.
 
 Duplicate `client_id` handling belongs in the command:
 
@@ -365,24 +321,20 @@ This makes retried create requests idempotent.
 
 ## Resolver rules
 
-- Public HTTP routes use `client_id`, never internal `id`.
-- Internal jobs may use `id` only when it came from trusted internal data.
+- All addressable entities are resolved by `client_id`.
 - Services resolve references through domain wrapper resolvers, not ad hoc query filters.
 - The resolver always applies workspace scope when the model has `workspace_id`.
 - The resolver filters soft-deleted rows unless `include_deleted=True`.
 - Commands that mutate a resolved row pass `for_update=True` when race conditions are possible.
 - Batch commands resolve all targets before mutating any target.
-- Batch resolvers reject mixed identifier types. Resolve by all `client_id`s or all trusted internal `id`s.
 - Batch resolvers return results in the same order as the input refs.
-- If both `id` and `client_id` are provided, reject the request instead of guessing.
 - Permission checks remain in commands/queries. The resolver is not an authorization layer.
 
 ---
 
 ## What identity resolution must NOT do
 
-- **Never expose internal `id` as the primary public API identifier.** Use `client_id`.
-- **Never accept internal `id` from public request bodies for user-facing resources.**
+- **Never introduce or expose internal integer IDs for addressable resources.**
 - **Never duplicate `workspace_id` / `client_id` lookup code in every command.** Use the resolver.
 - **Never resolve entities one-by-one inside a batch modification loop.** Resolve the batch first, then mutate resolved instances.
 - **Never partially mutate a batch when one requested target is missing.** Missing targets fail the whole command before modification.

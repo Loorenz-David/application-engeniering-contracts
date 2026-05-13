@@ -31,17 +31,17 @@ Do NOT write audit entries for:
 
 ```python
 # models/tables/audit/audit_log.py
-class AuditLog(db.Model):
+class AuditLog(IdentityMixin, db.Model):
+    CLIENT_ID_PREFIX = "aud"
     __tablename__ = "audit_logs"
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     # What happened
     event: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
     # Who did it
-    actor_user_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    actor_user_id: Mapped[str | None] = mapped_column(String(64), ForeignKey("users.client_id"), nullable=True, index=True)
     actor_label: Mapped[str | None] = mapped_column(String(255), nullable=True)
     # Where (workspace isolation)
-    workspace_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    workspace_id: Mapped[str] = mapped_column(String(64), ForeignKey("workspaces.client_id"), nullable=False, index=True)
     # What resource was affected
     resource_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
     resource_client_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
@@ -78,8 +78,8 @@ from my_app.models.tables.audit.audit_log import AuditLog
 def write_audit(
     request: Request,
     event: str,
-    workspace_id: int,
-    actor_user_id: int | None = None,
+    workspace_id: str,
+    actor_user_id: str | None = None,
     actor_label: str | None = None,
     resource_type: str | None = None,
     resource_client_id: str | None = None,
@@ -128,7 +128,7 @@ def delete_workspace_member(ctx: ServiceContext) -> dict:
             db.session.query(WorkspaceMembership)
             .filter(
                 WorkspaceMembership.workspace_id == ctx.workspace_id,
-                WorkspaceMembership.user_client_id == request.user_client_id,
+                WorkspaceMembership.user_id == request.user_client_id,
             )
             .first()
         )
@@ -145,7 +145,7 @@ def delete_workspace_member(ctx: ServiceContext) -> dict:
             actor_label=request.actor_email,   # captured from JWT claims
             resource_type="workspace_member",
             resource_client_id=request.user_client_id,
-            detail={"removed_role": membership.role_name},
+            detail={"removed_workspace_role_id": membership.workspace_role_id},
         )
 
     return {}

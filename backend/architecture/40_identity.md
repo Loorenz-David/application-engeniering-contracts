@@ -2,12 +2,11 @@
 
 ## Purpose
 
-Every table carries two identifiers:
+Every addressable table carries one identifier:
 
 | Column | Type | Purpose |
 |---|---|---|
-| `id` | `Integer` PK | Internal SQLAlchemy join key — **never exposed to the API** |
-| `client_id` | `String(64)` | Public identifier — ULID with a type prefix |
+| `client_id` | `String(64)` PK | Prefixed ULID used for database identity, FKs, routes, events, and API payloads |
 
 The `client_id` format is `{prefix}_{ULID}`, for example `task_01ARYZ6S41TSV4RRFFQ69G5FAV`.
 
@@ -47,7 +46,7 @@ def generate_id(prefix: str) -> str:
 ```python
 # models/base/identity.py
 from typing import ClassVar
-from sqlalchemy import Integer, String
+from sqlalchemy import String
 from sqlalchemy.orm import Mapped, mapped_column, declared_attr
 from my_app.services.infra.identity import generate_id
 
@@ -55,8 +54,7 @@ from my_app.services.infra.identity import generate_id
 class IdentityMixin:
     """
     Base mixin for all tables. Provides:
-      id        — integer primary key (internal use only)
-      client_id — prefixed ULID string for API references and optimistic updates
+      client_id — prefixed ULID string primary key
 
     Inherit as: class MyModel(IdentityMixin, db.Model)
     Set CLIENT_ID_PREFIX on the concrete model class.
@@ -64,13 +62,11 @@ class IdentityMixin:
 
     CLIENT_ID_PREFIX: ClassVar[str] = "obj"
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-
     @declared_attr
     def client_id(cls) -> Mapped[str]:
         prefix = cls.CLIENT_ID_PREFIX
         return mapped_column(
-            String(64), nullable=False, unique=True, index=True,
+            String(64), primary_key=True,
             default=lambda: generate_id(prefix),
         )
 ```
@@ -136,12 +132,12 @@ Every model that ships with the framework scaffold uses a registered prefix. Whe
 
 ## Rules
 
-- **Never expose `id` in API responses.** All public endpoints identify resources by `client_id`. Use the identity resolver (see [38_identity_resolution.md](38_identity_resolution.md)) to translate between them.
+- **There is no internal integer `id` on addressable tables.** `client_id` is the primary key and the public identifier.
 - **`CLIENT_ID_PREFIX` must be set on every concrete model.** The fallback `"obj"` is intentionally generic — it is a signal that the prefix has not been defined, not a valid production value.
-- **Never generate `client_id` values in application code.** The column default calls `generate_id` at insert time. Do not pre-compute and pass `client_id` explicitly unless seeding test fixtures.
+- **Backend application code should rely on the model default.** The column default calls `generate_id` at insert time. Create commands may accept a caller-provided `client_id` for optimistic frontend flows; otherwise omit it and let the default run.
 - **`client_id` is immutable after creation.** Never update it. A changed `client_id` is an identity change — break external references, bookmarks, and audit trails.
-- **Do not store `client_id` values as foreign keys in other tables.** FKs always reference `id`. `client_id` is for API surfaces only.
-- **Junction / association tables do not need `IdentityMixin`.** Pure many-to-many tables that are never directly addressed by the API only need a composite PK or a surrogate integer PK.
+- **Foreign keys reference `client_id`.** FK columns keep semantic names like `workspace_id`, `user_id`, and `record_id`, but their type is `String(64)` and they target `<table>.client_id`.
+- **Junction / association tables do not need `IdentityMixin` when they are never directly addressed.** Use a composite primary key across the referenced `client_id` FK columns.
 
 ---
 

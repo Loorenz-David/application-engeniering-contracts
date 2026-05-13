@@ -31,9 +31,8 @@ Use this workflow when you are adding a brand new entity that does not yet exist
 **File:** `models/tables/<domain>/<entity>.py`
 
 Requirements:
-- `id` (Integer, primary key)
-- `client_id` (String, unique, non-nullable, indexed) — the external-facing identifier
-- `workspace_id` (Integer, FK to `workspaces.id`, non-nullable, indexed)
+- `IdentityMixin` with `client_id` (String(64), primary key) — the DB and API identifier
+- `workspace_id` (String(64), FK to `workspaces.client_id`, non-nullable, indexed)
 - `is_deleted` + `deleted_at` — required on all user-facing entities
 - `created_at` + `updated_at` — required on all tables
 - No business logic in the model. No computed properties that touch the DB.
@@ -73,7 +72,7 @@ alembic revision --autogenerate -m "create_<entity>_table"
 #    - Correct table name
 #    - nullable/not-null set correctly
 #    - Index on workspace_id (mandatory)
-#    - Index on client_id (mandatory)
+#    - client_id is the primary key via IdentityMixin
 #    - downgrade() drops the table
 
 # 4. Apply
@@ -305,12 +304,12 @@ Implement `create_app()` following [02_app_factory.md](02_app_factory.md):
 Before writing any domain, implement the 5-table workspace model:
 
 1. `users` table
-2. `base_roles` table + seed data (`ADMIN=1`, `MEMBER=2`, `FIELD=3`)
+2. `roles` table + seed data (`role_admin`, `role_member`, `role_field`)
 3. `workspaces` table
 4. `workspace_roles` table
 5. `workspace_memberships` table
 
-Write the migration that creates all five tables and seeds `base_roles` with `ON CONFLICT DO NOTHING`.
+Write the migration that creates all five tables and seeds `roles` with `ON CONFLICT DO NOTHING`. Do not add `role_id` or `workspace_id` to `users`; role assignment lives on `workspace_memberships`.
 
 **Reference:** [24_multi_tenancy.md](24_multi_tenancy.md)
 

@@ -473,7 +473,7 @@ def _publish(payload: dict) -> None:
 - All pushes use named rooms (user or workspace). Never broadcast to all connected clients.
 - Event names follow `<domain>:<action>` convention: `"record:updated"`, `"case:state-changed"`. The colon is intentional and must match the frontend's `ServerToClientEvents` type exactly.
 - Payload must be a plain dict — never an ORM instance.
-- Use `client_id` values in all payloads. Never internal DB integer IDs.
+- Use `client_id` values in all payloads. Never alternate integer IDs.
 
 ---
 

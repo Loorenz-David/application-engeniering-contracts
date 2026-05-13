@@ -45,6 +45,10 @@ class ServiceContext:
         return self.identity.get("workspace_id", "")
 
     @property
+    def workspace_role_id(self) -> str:
+        return self.identity.get("workspace_role_id", "")
+
+    @property
     def role_name(self) -> str:
         return self.identity.get("role_name", "")
 
@@ -191,20 +195,16 @@ async def resolve_by_client_id(
     return instance
 
 
-async def resolve_user_id(session: AsyncSession, user_client_id: str) -> int:
-    \"\"\"Resolve a user client_id (JWT claim) to the internal integer user.id.
-
-    Used by background task handlers that receive user_client_id from the JWT
-    and need to write to tables that carry the internal FK.
-    \"\"\"
+async def resolve_user_client_id(session: AsyncSession, user_client_id: str) -> str:
+    \"\"\"Validate and return a user client_id from a JWT claim or task payload.\"\"\"
     from {a}.models.tables.users.user import User
 
-    stmt = select(User.id).where(User.client_id == user_client_id)
+    stmt = select(User.client_id).where(User.client_id == user_client_id)
     result = await session.execute(stmt)
-    user_id = result.scalar_one_or_none()
+    resolved_user_id = result.scalar_one_or_none()
 
-    if user_id is None:
+    if resolved_user_id is None:
         raise NotFound(f"User '{{user_client_id}}' not found.")
 
-    return user_id
+    return resolved_user_id
 """, force=force)

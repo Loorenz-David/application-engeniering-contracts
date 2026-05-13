@@ -164,7 +164,7 @@ def confirm_upload(ctx: ServiceContext) -> dict:
                 raise NotFound(f"Record {request.record_client_id} not found.")
 
             attachment = RecordAttachment(
-                record_id=record.id,
+                record_id=record.client_id,
                 workspace_id=ctx.workspace_id,
                 storage_key=request.storage_key,
                 file_name=pending.file_name,
@@ -203,7 +203,7 @@ staging/42/imports/b2c3d4e5-f6a7-8901-bcde-f12345678901.xlsx
 from my_app.config import settings
 
 
-def _build_storage_key(workspace_id: int, file_name: str) -> str:
+def _build_storage_key(workspace_id: str, file_name: str) -> str:
     env = settings.environment
     ext = os.path.splitext(file_name)[1].lower()[:10]   # cap extension length
     return f"{env}/{workspace_id}/uploads/{uuid.uuid4()}{ext}"
@@ -265,7 +265,7 @@ Track every requested upload so orphaned files can be detected and cleaned up:
 ```python
 # models/tables/files/pending_upload.py
 from datetime import datetime, timezone
-from sqlalchemy import Integer, String, DateTime, BigInteger, ForeignKey
+from sqlalchemy import String, DateTime, BigInteger, ForeignKey
 from sqlalchemy import Enum as SAEnum
 from sqlalchemy.orm import Mapped, mapped_column
 from my_app.models.base.identity import IdentityMixin
@@ -277,8 +277,8 @@ class PendingUpload(IdentityMixin, db.Model):
     CLIENT_ID_PREFIX = "pu"
     __tablename__    = "pending_uploads"
 
-    workspace_id:  Mapped[int] = mapped_column(Integer, nullable=False, index=True)
-    created_by_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False)
+    workspace_id:  Mapped[str] = mapped_column(String(64), ForeignKey("workspaces.client_id"), nullable=False, index=True)
+    created_by_id: Mapped[str] = mapped_column(String(64), ForeignKey("users.client_id"), nullable=False)
     storage_key:   Mapped[str] = mapped_column(String(512), unique=True, nullable=False)
     file_name:     Mapped[str] = mapped_column(String(255), nullable=False)
     content_type:  Mapped[str] = mapped_column(String(128), nullable=False)
@@ -297,7 +297,7 @@ class PendingUpload(IdentityMixin, db.Model):
     )
 ```
 
-`IdentityMixin` provides `id` (primary key) and `client_id` (ULID, prefixed `pu`). `status` is a typed enum column — never a raw string. `size_bytes` is `None` until the upload is confirmed.
+`IdentityMixin` provides `client_id` (primary key, ULID, prefixed `pu`). `status` is a typed enum column — never a raw string. `size_bytes` is `None` until the upload is confirmed.
 
 ---
 
@@ -403,7 +403,7 @@ When a domain record is hard-deleted:
 from my_app.services.infra.storage import get_storage_client
 
 
-def delete_record_attachments(record_id: int, workspace_id: int) -> None:
+def delete_record_attachments(record_id: str, workspace_id: str) -> None:
     attachments = (
         db.session.query(RecordAttachment)
         .filter(

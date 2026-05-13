@@ -11,10 +11,12 @@ def _phase2(root: Path, a: str, force: bool) -> None:
 
     # ── IdentityMixin ─────────────────────────────────────────────────────────
     _write(root / a / "models" / "base" / "identity.py", f"""\
+from typing import ClassVar
+
 from ulid import ULID
 
-from sqlalchemy import Integer, String
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy import String
+from sqlalchemy.orm import Mapped, declared_attr, mapped_column
 
 
 def generate_id(prefix: str) -> str:
@@ -23,25 +25,28 @@ def generate_id(prefix: str) -> str:
 
 
 class IdentityMixin:
-    \"\"\"Adds id (internal PK) and client_id (public ULID) to any model.
+    \"\"\"Adds client_id as the primary key to any addressable model.
 
     Combine with Base and the model class:
         class MyModel(IdentityMixin, Base): ...
     \"\"\"
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    client_id: Mapped[str] = mapped_column(
-        String(32), nullable=False, unique=True, index=True
-    )
+    CLIENT_ID_PREFIX: ClassVar[str] = "obj"
 
-    # Subclasses declare CLIENT_ID_PREFIX = "xxx" and call generate_id() on insert.
-    CLIENT_ID_PREFIX: str = ""
+    @declared_attr
+    def client_id(cls) -> Mapped[str]:
+        prefix = cls.CLIENT_ID_PREFIX
+        return mapped_column(
+            String(64),
+            primary_key=True,
+            default=lambda: generate_id(prefix),
+        )
 """, force=force)
 
     # ── HistoryRecord mixin ───────────────────────────────────────────────────
     _write(root / a / "models" / "base" / "history_record.py", """\
 from datetime import datetime, timezone
 
-from sqlalchemy import DateTime, ForeignKey, Integer, JSON, String
+from sqlalchemy import DateTime, ForeignKey, JSON, String
 from sqlalchemy.orm import Mapped, declared_attr, mapped_column
 
 
@@ -53,8 +58,8 @@ class HistoryRecord:
     \"\"\"
 
     @declared_attr
-    def updated_by_id(cls) -> Mapped[int]:
-        return mapped_column(Integer, ForeignKey("users.id", deferrable=True), nullable=False, index=True)
+    def updated_by_id(cls) -> Mapped[str]:
+        return mapped_column(String(64), ForeignKey("users.client_id", deferrable=True), nullable=False, index=True)
 
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -75,7 +80,7 @@ class HistoryRecord:
     _write(root / a / "models" / "tables" / "users" / "user.py", f"""\
 from datetime import datetime, timezone
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String
+from sqlalchemy import Boolean, DateTime, ForeignKey, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from {a}.models.base.base import Base
@@ -92,8 +97,8 @@ class User(IdentityMixin, Base):
         default=lambda: datetime.now(timezone.utc),
         nullable=False,
     )
-    created_by_id: Mapped[int | None] = mapped_column(
-        Integer, ForeignKey("users.id", deferrable=True), nullable=True
+    created_by_id: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("users.client_id", deferrable=True), nullable=True
     )
 
     # Identity
@@ -114,37 +119,31 @@ class User(IdentityMixin, Base):
     last_online: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     # FK shortcuts — updated atomically with the new child record
-    last_app_view_record_id: Mapped[int | None] = mapped_column(
-        Integer,
+    last_app_view_record_id: Mapped[str | None] = mapped_column(
+        String(64),
         ForeignKey(
-            "user_app_view_records.id",
+            "user_app_view_records.client_id",
             name="fk_users_last_app_view_record_id",
             use_alter=True,
             deferrable=True,
         ),
         nullable=True,
     )
-    last_history_record_id: Mapped[int | None] = mapped_column(
-        Integer,
+    last_history_record_id: Mapped[str | None] = mapped_column(
+        String(64),
         ForeignKey(
-            "user_history_records.id",
+            "user_history_records.client_id",
             name="fk_users_last_history_record_id",
             use_alter=True,
             deferrable=True,
         ),
         nullable=True,
     )
-
-    # Role (wired in Phase 4)
-    role_id: Mapped[int | None] = mapped_column(
-        Integer, ForeignKey("roles.id", deferrable=True), nullable=True, index=True
-    )
-
     # Relationships
     created_by: Mapped["User | None"] = relationship(
         "User",
         foreign_keys=[created_by_id],
-        primaryjoin="User.created_by_id == User.id",
+        primaryjoin="User.created_by_id == User.client_id",
     )
     app_view_records: Mapped[list["UserAppViewRecord"]] = relationship(
         "UserAppViewRecord",
@@ -170,7 +169,7 @@ class User(IdentityMixin, Base):
     _write(root / a / "models" / "tables" / "users" / "user_app_view_record.py", f"""\
 from datetime import datetime, timezone
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String
+from sqlalchemy import DateTime, ForeignKey, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from {a}.models.base.base import Base
@@ -186,8 +185,8 @@ class UserAppViewRecord(IdentityMixin, Base):
     CLIENT_ID_PREFIX = "uavr"
     __tablename__ = "user_app_view_records"
 
-    user_id: Mapped[int] = mapped_column(
-        Integer, ForeignKey("users.id", deferrable=True), nullable=False, index=True
+    user_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("users.client_id", deferrable=True), nullable=False, index=True
     )
     entity_type: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
     entity_client_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
@@ -208,7 +207,7 @@ class UserAppViewRecord(IdentityMixin, Base):
 
     # ── UserHistoryRecord ─────────────────────────────────────────────────────
     _write(root / a / "models" / "tables" / "users" / "user_history_record.py", f"""\
-from sqlalchemy import ForeignKey, Integer
+from sqlalchemy import ForeignKey, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from {a}.models.base.base import Base
@@ -220,8 +219,8 @@ class UserHistoryRecord(IdentityMixin, HistoryRecord, Base):
     CLIENT_ID_PREFIX = "uhr"
     __tablename__ = "user_history_records"
 
-    user_id: Mapped[int] = mapped_column(
-        Integer, ForeignKey("users.id", deferrable=True), nullable=False, index=True
+    user_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("users.client_id", deferrable=True), nullable=False, index=True
     )
 
     user: Mapped["User"] = relationship(

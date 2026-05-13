@@ -65,7 +65,7 @@ class NotificationType(str, enum.Enum):
 
 ```python
 from datetime import datetime, timezone
-from sqlalchemy import String, Text, DateTime, ForeignKey, Integer, Index
+from sqlalchemy import String, Text, DateTime, ForeignKey, Index
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from my_app.models.base.identity import IdentityMixin
 
@@ -77,8 +77,8 @@ class Notification(IdentityMixin, Base):
         Index("ix_notifications_user_unread", "user_id", "read_at"),
     )
 
-    user_id: Mapped[int] = mapped_column(
-        Integer, ForeignKey("users.id"), nullable=False, index=True
+    user_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("users.client_id"), nullable=False, index=True
     )
 
     notification_type: Mapped[str] = mapped_column(String(64),   nullable=False, index=True)
@@ -107,7 +107,7 @@ class Notification(IdentityMixin, Base):
 
 ```python
 from datetime import datetime, timezone
-from sqlalchemy import String, Text, DateTime, ForeignKey, Integer, UniqueConstraint
+from sqlalchemy import String, Text, DateTime, ForeignKey, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from my_app.models.base.identity import IdentityMixin
 
@@ -119,8 +119,8 @@ class PushSubscription(IdentityMixin, Base):
         UniqueConstraint("user_id", "endpoint", name="uq_push_subscription_user_endpoint"),
     )
 
-    user_id: Mapped[int] = mapped_column(
-        Integer, ForeignKey("users.id"), nullable=False, index=True
+    user_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("users.client_id"), nullable=False, index=True
     )
 
     endpoint:     Mapped[str] = mapped_column(Text,        nullable=False)
@@ -150,7 +150,7 @@ The table is entity-agnostic — `entity_type` stores an `EntityType` value (see
 
 ```python
 from datetime import datetime, timezone
-from sqlalchemy import String, DateTime, ForeignKey, Integer, UniqueConstraint
+from sqlalchemy import String, DateTime, ForeignKey, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from my_app.models.base.identity import IdentityMixin
 
@@ -165,8 +165,8 @@ class NotificationPin(IdentityMixin, Base):
         ),
     )
 
-    user_id:          Mapped[int] = mapped_column(
-        Integer, ForeignKey("users.id"), nullable=False, index=True
+    user_id:          Mapped[str] = mapped_column(
+        String(64), ForeignKey("users.client_id"), nullable=False, index=True
     )
     entity_type:      Mapped[str] = mapped_column(String(64),  nullable=False, index=True)
     entity_client_id: Mapped[str] = mapped_column(String(128), nullable=False)
@@ -426,14 +426,14 @@ async def handle(raw: dict, task_id: str, session: AsyncSession) -> None:
         },
     }
 
-    stale_ids = []
+    stale_client_ids = []
 
     for sub in subscriptions:
         try:
             send_web_push(sub.endpoint, sub.p256dh, sub.auth, payload)
         except WebPushException as e:
             if e.response and e.response.status_code == 410:
-                stale_ids.append(sub.id)
+                stale_client_ids.append(sub.client_id)
             else:
                 logger.warning(
                     "push failed | sub=%s status=%s",
@@ -441,9 +441,9 @@ async def handle(raw: dict, task_id: str, session: AsyncSession) -> None:
                     e.response.status_code if e.response else "no response",
                 )
 
-    if stale_ids:
+    if stale_client_ids:
         await session.execute(
-            delete(PushSubscription).where(PushSubscription.id.in_(stale_ids))
+            delete(PushSubscription).where(PushSubscription.client_id.in_(stale_client_ids))
         )
         await session.commit()
 ```
@@ -530,7 +530,7 @@ The user is opting in to receive all notifications for that entity, regardless o
 # incoming_data keys:
 #   unread_only (bool, default False)
 #   limit       (int,  default 30)
-#   before_id   (int | None)   — keyset cursor (use DB id, not client_id)
+#   before_client_id (str | None) — keyset cursor paired with created_at
 #
 # Returns {"notifications": list[NotificationResult], "unread_count": int}
 # unread_count is always the total unread count regardless of pagination —
@@ -625,8 +625,8 @@ async def resolve_case_notification_targets(
 async def _get_participants(session: AsyncSession, case: "Case") -> set[str]:
     rows = await session.execute(
         select(User.client_id)
-        .join(CaseParticipant, CaseParticipant.user_id == User.id)
-        .where(CaseParticipant.case_id == case.id)
+        .join(CaseParticipant, CaseParticipant.user_id == User.client_id)
+        .where(CaseParticipant.case_id == case.client_id)
     )
     return {row[0] for row in rows}
 
@@ -634,7 +634,7 @@ async def _get_participants(session: AsyncSession, case: "Case") -> set[str]:
 async def _get_pinned_subscribers(session: AsyncSession, case: "Case") -> set[str]:
     rows = await session.execute(
         select(User.client_id)
-        .join(NotificationPin, NotificationPin.user_id == User.id)
+        .join(NotificationPin, NotificationPin.user_id == User.client_id)
         .where(
             NotificationPin.entity_type      == EntityType.CASE.value,
             NotificationPin.entity_client_id == case.client_id,

@@ -70,7 +70,7 @@ Before running `alembic upgrade head`, open the generated file and verify every 
 - [ ] **Nullable set correctly** — New columns on populated tables must be `nullable=True` unless you provide a server default. See zero-downtime patterns below.
 - [ ] **Index present** — If the column appears in `WHERE` clauses, a `create_index` line must be present.
 - [ ] **Enum type handled** — If you added an `SAEnum` column, `create_type=True` should generate a `CREATE TYPE` statement. Verify it's there.
-- [ ] **Foreign key correct** — `ForeignKey("workspaces.id")` not `ForeignKey("workspace.id")` (wrong table name).
+- [ ] **Foreign key correct** — `ForeignKey("workspaces.client_id")` not `ForeignKey("workspace.client_id")` (wrong table name).
 - [ ] **Downgrade is safe** — The `downgrade()` function must correctly reverse the upgrade. Auto-generation usually handles this, but verify for complex changes.
 - [ ] **No unintended changes** — Sometimes Alembic detects unrelated schema drift. If the migration includes tables you did not change, investigate before applying.
 
@@ -205,25 +205,25 @@ def downgrade():
 
 ## Seeding required reference data in migrations
 
-When a new table requires seed rows to exist before the application can function (e.g., `base_roles`), include the seed in the same migration as the table creation:
+When a new table requires seed rows to exist before the application can function (e.g., `roles`), include the seed in the same migration as the table creation:
 
 ```python
 def upgrade():
     op.create_table(
-        "base_roles",
-        sa.Column("id", sa.Integer(), primary_key=True),
+        "roles",
+        sa.Column("client_id", sa.String(64), primary_key=True),
         sa.Column("name", sa.String(32), nullable=False, unique=True),
     )
     op.execute("""
-        INSERT INTO base_roles (id, name) VALUES
-        (1, 'ADMIN'),
-        (2, 'MEMBER'),
-        (3, 'FIELD')
+        INSERT INTO roles (client_id, name) VALUES
+        ('role_admin', 'ADMIN'),
+        ('role_member', 'MEMBER'),
+        ('role_field', 'FIELD')
         ON CONFLICT DO NOTHING
     """)
 
 def downgrade():
-    op.drop_table("base_roles")
+    op.drop_table("roles")
 ```
 
 `ON CONFLICT DO NOTHING` makes the seed idempotent — safe to re-run if the migration is accidentally applied twice.

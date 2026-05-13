@@ -93,7 +93,7 @@ This is the **single entry point** for any agent or engineer new to the codebase
 |---|---|---|
 | **{Domain A}** | {Responsibility} | `{Entity1}`, `{Entity2}` |
 | **{Domain B}** | {Responsibility} | `{Entity3}`, `{Entity4}` |
-| **Auth** | Authentication, JWT, role-based access | `User`, `WorkspaceRole`, `BaseRole` |
+| **Auth** | Authentication, JWT, membership-based role access | `User`, `WorkspaceMembership`, `WorkspaceRole`, `Role` |
 | **Notifications** | Real-time and push notifications | `NotificationRead`, `PushSubscription` |
 
 ---
@@ -150,10 +150,9 @@ Every domain has a README that describes what it owns, its core entities, and it
 
 | Field | Type | Description |
 |---|---|---|
-| `id` | `int` | Internal database ID |
-| `client_id` | `string (UUID)` | Stable public identifier |
-| `workspace_id` | `int` | Owning workspace |
-| `state_id` | `int` | Current state (see States) |
+| `client_id` | `string (prefixed ULID)` | Primary key and stable public identifier |
+| `workspace_id` | `string (prefixed ULID)` | Owning workspace client_id |
+| `state_id` | `string (prefixed ULID)` | Current state client_id (see States) |
 | `created_at` | `datetime (UTC)` | Creation timestamp |
 
 ---
@@ -223,8 +222,7 @@ List records for the authenticated workspace.
   "data": {
     "records": [
       {
-        "id": 123,
-        "client_id": "abc-123-def",
+        "client_id": "rec_01ABC...",
         "name": "Example Record",
         "state_id": 1,
         "created_at": "2025-01-15T12:00:00Z"
@@ -232,7 +230,7 @@ List records for the authenticated workspace.
     ],
     "records_pagination": {
       "has_more": true,
-      "after_cursor": "eyJpZCI6IDEyM30=",
+      "after_cursor": "eyJjcmVhdGVkX2F0IjoiLi4uIiwiY2xpZW50X2lkIjoiLi4uIn0=",
       "before_cursor": null
     }
   },
@@ -262,8 +260,7 @@ Create a record.
 {
   "data": {
     "record": {
-      "id": 124,
-      "client_id": "abc-124-def",
+      "client_id": "rec_01ABD...",
       "name": "My Record",
       "state_id": 1,
       "created_at": "2025-01-15T12:00:00Z"
@@ -488,7 +485,7 @@ The create record endpoint accepts record data and returns the created record.
 <!-- Correct — concrete, actionable -->
 **Request:** `PUT /api/v1/records/`
 Body: `{ "name": "...", "category_id": 3 }`
-Response: `{ "data": { "record": { "id": 124, "client_id": "...", ... } }, "warnings": [] }`
+Response: `{ "data": { "record": { "client_id": "rec_...", ... } }, "warnings": [] }`
 ```
 
 ### One source of truth per fact

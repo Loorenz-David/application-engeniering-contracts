@@ -130,6 +130,15 @@ class Settings(BaseSettings):
     # Environment
     environment: str = Field(default="development", alias="ENVIRONMENT")
 
+    # File storage
+    storage_provider: str = Field(default="local", alias="STORAGE_PROVIDER")
+    storage_bucket: str | None = Field(default=None, alias="STORAGE_BUCKET")
+    storage_region: str | None = Field(default=None, alias="STORAGE_REGION")
+    storage_endpoint_url: str | None = Field(default=None, alias="STORAGE_ENDPOINT_URL")
+    aws_access_key_id: str | None = Field(default=None, alias="AWS_ACCESS_KEY_ID")
+    aws_secret_access_key: str | None = Field(default=None, alias="AWS_SECRET_ACCESS_KEY")
+    local_storage_path: str = Field(default="/tmp/{a}-uploads", alias="LOCAL_STORAGE_PATH")
+
     model_config = SettingsConfigDict(
         # Load deterministic env profile selected by APP_ENV.
         # APP_ENV can be: development | testing | validation | production.

@@ -153,7 +153,7 @@ def workspace(db):
 @pytest.fixture
 def admin_user(db, workspace):
     from my_app.models.tables.users.user import User
-    u = User(email="admin@test.com", base_role_id=1)
+    u = User(email="admin@test.com")
     u.set_password("secret")
     db.session.add(u)
     db.session.commit()
@@ -163,10 +163,10 @@ def admin_user(db, workspace):
 @pytest.fixture
 def admin_identity(workspace, admin_user):
     return {
-        "user_id": admin_user.id,
-        "workspace_id": workspace.id,
-        "workspace_role_id": 1,
-        "base_role_id": 1,
+        "user_id": admin_user.client_id,
+        "workspace_id": workspace.client_id,
+        "workspace_role_id": "wsr_test",
+        "role_name": "admin",
         "permissions": [],
         "app_scope": "admin",
         "time_zone": "UTC",
@@ -262,7 +262,7 @@ class _FakeQuery:
 |---|---|
 | Replacing a module-level function | `monkeypatch.setattr(module, "fn_name", replacement)` |
 | Faking an ORM query chain | `SimpleNamespace` or a `_FakeQuery` class |
-| Faking an ORM instance | `SimpleNamespace(id=1, workspace_id=7, ...)` |
+| Faking an ORM instance | `SimpleNamespace(client_id="rec_01...", workspace_id="ws_01...", ...)` |
 | Replacing external SDK calls | `monkeypatch.setattr(sdk_module, "method", lambda *a, **k: ...)` |
 
 Never patch `db.session` globally — patch it on the specific module under test.
@@ -295,7 +295,7 @@ def test_create_record_persists_to_database(db, workspace, admin_identity):
     assert "record" in result
     record = db.session.query(Record).filter_by(client_id=result["record"]["client_id"]).first()
     assert record is not None
-    assert record.workspace_id == workspace.id
+    assert record.workspace_id == workspace.client_id
 
 
 def test_create_record_raises_not_found_for_missing_category(db, workspace, admin_identity):
@@ -345,7 +345,7 @@ def test_create_record_emits_created_event(db, workspace, admin_identity, monkey
 
     assert len(emitted) == 1
     assert emitted[0]["event_type"] == "record.created"
-    assert emitted[0]["workspace_id"] == workspace.id
+    assert emitted[0]["workspace_id"] == workspace.client_id
     assert "client_id" in emitted[0]["payload"]
 ```
 
@@ -361,7 +361,7 @@ from my_app.services.infra.events.builders.<domain>.record_events import build_r
 
 
 def test_build_record_created_event_includes_client_id():
-    record = SimpleNamespace(id=1, workspace_id=7, client_id="abc-123", name="Test")
+    record = SimpleNamespace(client_id="abc-123", workspace_id="ws_123", name="Test")
     event = build_record_created_event(record)
 
     assert event["event_type"] == "record.created"

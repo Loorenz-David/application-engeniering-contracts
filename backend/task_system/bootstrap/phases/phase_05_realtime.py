@@ -8,6 +8,7 @@ from bootstrap.writer import replace_once, touch_file as _touch, write_file as _
 def _phase5(root: Path, a: str, force: bool) -> None:
     typer.echo("\n-- Phase 5 - Real-Time Infrastructure -------------------------------")
 
+    # ── Redis client ─────────────────────────────────────────────────────────
     _write(root / a / "services" / "infra" / "redis" / "__init__.py", f"""\
 from {a}.services.infra.redis.client import assert_redis_available, get_redis_client
 from {a}.services.infra.redis.keys import make_key
@@ -36,40 +37,291 @@ def make_key(namespace: str, *parts: object) -> str:
     return ":".join([settings.redis_key_prefix, namespace, *clean])
 """, force=force)
 
+    # ── Event bus — contract-compliant (11_infra_events.md) ──────────────────
     _write(root / a / "services" / "infra" / "events" / "__init__.py", f"""\
-from {a}.services.infra.events.bus import EventBus
+from {a}.services.infra.events.event_bus import dispatch, register
 
-__all__ = ["EventBus"]
+__all__ = ["dispatch", "register"]
 """, force=force)
-    _write(root / a / "services" / "infra" / "events" / "bus.py", '''\
+
+    _write(root / a / "services" / "infra" / "events" / "domain_event.py", """\
+from dataclasses import dataclass, field
+
+
+@dataclass(kw_only=True)
+class Event:
+    \"\"\"Base event. All domain events inherit from this.\"\"\"
+    event_name: str
+    client_id:  str
+    extra:      dict = field(default_factory=dict)
+
+
+@dataclass(kw_only=True)
+class WorkspaceEvent(Event):
+    \"\"\"Broadcast to all users connected to a workspace room.\"\"\"
+    workspace_id: str
+
+
+@dataclass(kw_only=True)
+class UserEvent(Event):
+    \"\"\"Push to a specific user's room only.\"\"\"
+    user_id: str
+
+
+@dataclass(kw_only=True)
+class ConversationRoomEvent(Event):
+    \"\"\"Broadcast to all users currently viewing a specific conversation.\"\"\"
+    conversation_id: str
+    workspace_id:    str
+""", force=force)
+
+    _write(root / a / "services" / "infra" / "events" / "build_event.py", f"""\
+from {a}.services.infra.events.domain_event import (
+    ConversationRoomEvent,
+    UserEvent,
+    WorkspaceEvent,
+)
+
+
+def build_workspace_event(
+    entity,
+    event_name: str,
+    extra: dict | None = None,
+) -> WorkspaceEvent:
+    return WorkspaceEvent(
+        event_name=event_name,
+        client_id=entity.client_id,
+        workspace_id=entity.workspace_id,
+        extra=extra or {{}},
+    )
+
+
+def build_user_event(
+    user_id:    str,
+    event_name: str,
+    client_id:  str,
+    extra: dict | None = None,
+) -> UserEvent:
+    return UserEvent(
+        event_name=event_name,
+        client_id=client_id,
+        user_id=user_id,
+        extra=extra or {{}},
+    )
+
+
+def build_conversation_event(
+    entity,
+    event_name:      str,
+    *,
+    conversation_id: str,
+    workspace_id:    str,
+    extra: dict | None = None,
+) -> ConversationRoomEvent:
+    return ConversationRoomEvent(
+        event_name=event_name,
+        client_id=entity.client_id,
+        conversation_id=conversation_id,
+        workspace_id=workspace_id,
+        extra=extra or {{}},
+    )
+""", force=force)
+
+    _write(root / a / "services" / "infra" / "events" / "event_bus.py", """\
+from __future__ import annotations
+
 import logging
+from collections.abc import Awaitable, Callable
+
+from .domain_event import Event
 
 logger = logging.getLogger(__name__)
 
+_handlers: list[Callable[[Event], Awaitable[None]]] = []
 
-class EventBus:
-    """Contract-correct event bus seam.
 
-    Domain commands should call this after commit. Applications that need durable
-    delivery should back this with an outbox table and worker.
-    """
+def register(handler: Callable[[Event], Awaitable[None]]) -> None:
+    \"\"\"Register an async handler. Call during application startup only.\"\"\"
+    _handlers.append(handler)
 
-    async def emit(self, event_type: str, payload: dict) -> None:
-        logger.info("event_emitted | event_type=%s payload_keys=%s", event_type, sorted(payload.keys()))
 
-    async def batch_emit(self, event_type: str, payloads: list[dict]) -> None:
-        for payload in payloads:
-            await self.emit(event_type, payload)
-''', force=force)
-    for folder in ["builders", "handlers"]:
-        _touch(root / a / "services" / "infra" / "events" / folder / "__init__.py", force=force)
-    _write(root / a / "services" / "infra" / "events" / "registry" / "__init__.py", """\
-from collections.abc import Awaitable, Callable
-
-EventHandler = Callable[[dict], Awaitable[None]]
-EVENT_REGISTRY: dict[str, EventHandler] = {}
+async def dispatch(events: list[Event]) -> None:
+    \"\"\"Call every registered handler for each event after a transaction commits.
+    A failing handler is logged and skipped so one bad handler cannot block others.
+    \"\"\"
+    for event in events:
+        for handler in _handlers:
+            try:
+                await handler(event)
+            except Exception:
+                logger.exception(
+                    "event handler failed | event=%s handler=%s client_id=%s",
+                    event.event_name,
+                    handler.__name__,
+                    event.client_id,
+                )
 """, force=force)
 
+    _write(root / a / "services" / "infra" / "events" / "realtime_push.py", f"""\
+from {a}.sockets.manager import manager
+
+
+async def push_workspace_refresh(workspace_id: str, event_name: str, payload: dict) -> None:
+    await manager.broadcast_to_room(manager.workspace_room(workspace_id), event_name, payload)
+
+
+async def push_workspace_batch(workspace_id: str, event_name: str, ids: list) -> None:
+    await manager.broadcast_to_room(
+        manager.workspace_room(workspace_id), event_name, {{"ids": ids}}
+    )
+
+
+async def push_to_conversation(conversation_id: str, event_name: str, payload: dict) -> None:
+    await manager.broadcast_to_room(
+        manager.conversation_room(conversation_id), event_name, payload
+    )
+
+
+async def push_to_user(user_id: str, event_name: str, payload: dict) -> None:
+    await manager.send_to_user(user_id, event_name, payload)
+""", force=force)
+
+    # ── Event handlers ────────────────────────────────────────────────────────
+    _touch(root / a / "services" / "infra" / "events" / "handlers" / "__init__.py", force=force)
+
+    _write(root / a / "services" / "infra" / "events" / "handlers" / "socket_handler.py", f"""\
+from {a}.services.infra.events.domain_event import (
+    ConversationRoomEvent,
+    UserEvent,
+    WorkspaceEvent,
+)
+from {a}.services.infra.events.realtime_push import (
+    push_to_conversation,
+    push_to_user,
+    push_workspace_batch,
+    push_workspace_refresh,
+)
+
+
+async def handle(event) -> None:
+    \"\"\"Route domain events to the correct socket room.
+    ConversationRoomEvent is checked first (most specific).
+    \"\"\"
+    if isinstance(event, ConversationRoomEvent):
+        await push_to_conversation(
+            event.conversation_id,
+            event.event_name,
+            {{"client_id": event.client_id, **event.extra}},
+        )
+    elif isinstance(event, WorkspaceEvent):
+        if "ids" in event.extra:
+            await push_workspace_batch(event.workspace_id, event.event_name, event.extra["ids"])
+        else:
+            await push_workspace_refresh(
+                event.workspace_id,
+                event.event_name,
+                {{"client_id": event.client_id, **event.extra}},
+            )
+    elif isinstance(event, UserEvent):
+        await push_to_user(
+            event.user_id,
+            event.event_name,
+            {{"client_id": event.client_id, **event.extra}},
+        )
+""", force=force)
+
+    _write(root / a / "services" / "infra" / "events" / "handlers" / "audit_handler.py", f"""\
+import logging
+from datetime import datetime, timezone
+
+from {a}.services.infra.events.domain_event import Event
+
+logger = logging.getLogger(__name__)
+
+# Populate with audited event names in local extensions.
+# e.g. _AUDITED_EVENTS = {{"workspace.member.removed", "user.erased"}}
+_AUDITED_EVENTS: set[str] = set()
+
+
+async def handle(event: Event) -> None:
+    if not _AUDITED_EVENTS or event.event_name not in _AUDITED_EVENTS:
+        return
+
+    workspace_id = getattr(event, "workspace_id", event.extra.get("workspace_id"))
+    if not workspace_id:
+        logger.warning("audit_handler: no workspace_id on event %s — skipped", event.event_name)
+        return
+
+    try:
+        from {a}.models.database import get_db_session
+        from {a}.services.infra.audit.write_audit import write_audit_from_event
+
+        async for session in get_db_session():
+            await write_audit_from_event(
+                session=session,
+                event_name=event.event_name,
+                workspace_id=workspace_id,
+                resource_client_id=event.client_id or None,
+                detail=event.extra,
+                occurred_at=datetime.now(timezone.utc),
+            )
+            await session.commit()
+    except Exception:
+        logger.exception(
+            "audit_handler: failed to write audit entry | event=%s client_id=%s",
+            event.event_name,
+            event.client_id,
+        )
+""", force=force)
+
+    _write(root / a / "services" / "infra" / "events" / "handlers" / "webhook_handler.py", f"""\
+import logging
+
+from {a}.services.infra.events.domain_event import WorkspaceEvent
+
+logger = logging.getLogger(__name__)
+
+# Populate with webhook-eligible event names in local extensions.
+# e.g. _WEBHOOK_EVENTS = {{"invoice:updated", "case:state-changed"}}
+_WEBHOOK_EVENTS: set[str] = set()
+
+
+async def handle(event) -> None:
+    \"\"\"Enqueue a durable webhook delivery task — never calls external APIs inline.\"\"\"
+    if not _WEBHOOK_EVENTS:
+        return
+    if not isinstance(event, WorkspaceEvent):
+        return
+    if event.event_name not in _WEBHOOK_EVENTS:
+        return
+
+    try:
+        from {a}.domain.execution.enums import EventTaskOriginSourceEnum, TaskType
+        from {a}.models.database import get_db_session
+        from {a}.services.infra.execution.task_factory import create_execution_task
+
+        async for session in get_db_session():
+            await create_execution_task(
+                session=session,
+                task_type=TaskType.DELIVER_WEBHOOK,
+                payload={{
+                    "event_name":   event.event_name,
+                    "client_id":    event.client_id,
+                    "workspace_id": event.workspace_id,
+                    "extra":        event.extra,
+                }},
+                origin_source=EventTaskOriginSourceEnum.INSTANT,
+            )
+            await session.commit()
+    except Exception:
+        logger.exception(
+            "webhook_handler: failed to enqueue | event=%s workspace=%s",
+            event.event_name,
+            event.workspace_id,
+        )
+""", force=force)
+
+    # ── Sockets ───────────────────────────────────────────────────────────────
     _write(root / a / "sockets" / "__init__.py", f"""\
 import socketio
 
@@ -222,6 +474,7 @@ create_app()
 app = sockets_module.socket_app
 """, force=force)
 
+    # ── Patch app factory — socket wiring + event handler registration ────────
     replace_once(
         root / a / "__init__.py",
         "def create_app() -> FastAPI:\n    app = FastAPI(lifespan=lifespan)\n",
@@ -237,4 +490,15 @@ app = sockets_module.socket_app
         root / a / "__init__.py",
         "    _register_routers(app)\n    _validate_config()\n    return app\n",
         f"    _register_routers(app)\n    _validate_config()\n\n    import socketio\n    from {a}.sockets import sio\n    import {a}.sockets as sockets_module\n    sockets_module.socket_app = socketio.ASGIApp(sio, other_asgi_app=app)\n    return app\n",
+    )
+    # Register event handlers during lifespan startup
+    replace_once(
+        root / a / "__init__.py",
+        "    from {a}.models.database import init_db, close_db\n    await init_db()\n    yield\n    await close_db()\n".replace("{a}", a),
+        f"    from {a}.models.database import init_db, close_db\n    await init_db()\n    _register_event_handlers()\n    yield\n    await close_db()\n",
+    )
+    replace_once(
+        root / a / "__init__.py",
+        "def _register_routers(app: FastAPI) -> None:\n",
+        f"def _register_event_handlers() -> None:\n    from {a}.services.infra.events import register\n    from {a}.services.infra.events.handlers.socket_handler import handle as socket_handle\n    from {a}.services.infra.events.handlers.audit_handler import handle as audit_handle\n    from {a}.services.infra.events.handlers.webhook_handler import handle as webhook_handle\n    register(socket_handle)\n    register(audit_handle)\n    register(webhook_handle)\n\n\ndef _register_routers(app: FastAPI) -> None:\n",
     )

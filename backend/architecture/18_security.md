@@ -40,7 +40,7 @@ Raw SQL strings (`text(...)`) are **forbidden** unless there is no ORM equivalen
 
 ### Rule 3 — Resolve public IDs with workspace scope
 
-Public path parameters use `client_id`, not internal database IDs. They must still be resolved against the caller's workspace scope:
+Public path parameters use `client_id`. They must still be resolved against the caller's workspace scope:
 
 ```python
 @router.get("/{record_client_id}")
@@ -80,7 +80,6 @@ def serialize_user(user: User) -> dict:
     return {
         "client_id": user.client_id,
         "email": user.email,
-        "role": user.base_role_id,
     }
 
 # Wrong — exposes everything including password_hash
@@ -216,13 +215,13 @@ async def login(
 Every resource lookup must assert ownership:
 
 ```python
-# Wrong — fetches any record by ID regardless of workspace
+# Wrong — fetches any record without workspace scope
 record = db.session.get(Record, record_id)
 
 # Correct — scopes to caller's workspace
 record = (
     db.session.query(Record)
-    .filter(Record.id == record_id, Record.workspace_id == ctx.workspace_id)
+    .filter(Record.client_id == record_id, Record.workspace_id == ctx.workspace_id)
     .first()
 )
 if record is None:

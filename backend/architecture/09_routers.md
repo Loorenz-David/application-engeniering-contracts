@@ -294,7 +294,7 @@ Pass the function directly — never `lambda c: fn(c)`.
 - No business data is extracted or modified in the router. `incoming_data` goes directly into the context untouched.
 - Do not pop flags out of `incoming_data` in the router. The command is responsible for interpreting its own input.
 - URL path parameters are the only data the router merges into `incoming_data`. All other data comes from the Pydantic body model or query parameters.
-- Public resource path parameters are `client_id` values. Do not expose internal integer IDs in public routes.
+- Public resource path parameters are `client_id` values. Do not introduce internal integer IDs in public routes.
 - Declare request body Pydantic models in the router file (unless shared across multiple routes, in which case extract to `routers/schemas/<domain>.py`).
 
 ---

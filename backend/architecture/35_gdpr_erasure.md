@@ -26,11 +26,10 @@ Not all data can or should be hard-deleted. For each data category, choose one o
 Every model that stores PII must have a `# PII` comment on each sensitive column:
 
 ```python
-class User(db.Model):
+class User(IdentityMixin, db.Model):
+    CLIENT_ID_PREFIX = "usr"
     __tablename__ = "users"
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    client_id: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
     email: Mapped[str] = mapped_column(String(255), nullable=False)        # PII
     full_name: Mapped[str | None] = mapped_column(String(255))             # PII
     phone: Mapped[str | None] = mapped_column(String(32))                  # PII
@@ -61,13 +60,12 @@ Erasure is not instantaneous. It follows a structured workflow to allow for veri
 
 ```python
 # models/tables/privacy/erasure_request.py
-class ErasureRequest(db.Model):
+class ErasureRequest(IdentityMixin, db.Model):
+    CLIENT_ID_PREFIX = "ers"
     __tablename__ = "erasure_requests"
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    client_id: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
-    user_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
-    workspace_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    user_id: Mapped[str] = mapped_column(String(64), ForeignKey("users.client_id"), nullable=False, index=True)
+    workspace_id: Mapped[str] = mapped_column(String(64), ForeignKey("workspaces.client_id"), nullable=False)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
     # status: pending | confirmed | processing | completed | cancelled
     requested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
@@ -109,22 +107,22 @@ def execute_erasure(erasure_request: ErasureRequest) -> None:
     except Exception:
         with db.session.begin():
             erasure_request.status = "failed"
-        logger.exception("Erasure failed | erasure_request_id=%s user_id=%s", erasure_request.id, user_id)
+        logger.exception("Erasure failed | erasure_request_id=%s user_id=%s", erasure_request.client_id, user_id)
         raise
 ```
 
 ### Hard-delete functions
 
 ```python
-def _hard_delete_user_credentials(user_id: int) -> None:
+def _hard_delete_user_credentials(user_id: str) -> None:
     # Delete auth tokens, OAuth connections, API keys, MFA secrets
     db.session.query(UserSession).filter(UserSession.user_id == user_id).delete()
     db.session.query(OAuthConnection).filter(OAuthConnection.user_id == user_id).delete()
     db.session.flush()
 
 
-def _anonymize_user_profile(user_id: int) -> None:
-    user = db.session.query(User).filter(User.id == user_id).first()
+def _anonymize_user_profile(user_id: str) -> None:
+    user = db.session.query(User).filter(User.client_id == user_id).first()
     if user is None:
         return
 
@@ -163,7 +161,7 @@ Some data cannot be deleted regardless of the user's request due to legal obliga
 ```python
 # services/commands/privacy/execute_erasure.py
 
-def _can_immediately_erase(user_id: int) -> bool:
+def _can_immediately_erase(user_id: str) -> bool:
     # Example: cannot erase if there are unpaid invoices or active legal holds
     has_open_invoices = db.session.query(Invoice).filter(
         Invoice.user_id == user_id,
@@ -186,7 +184,7 @@ If a retention hold exists, the erasure is deferred. The system must:
 User-uploaded files (see [34_file_storage.md](34_file_storage.md)) must be deleted from object storage as part of the erasure:
 
 ```python
-def _delete_user_files(user_id: int, workspace_id: int) -> None:
+def _delete_user_files(user_id: str, workspace_id: str) -> None:
     attachments = (
         db.session.query(RecordAttachment)
         .filter(

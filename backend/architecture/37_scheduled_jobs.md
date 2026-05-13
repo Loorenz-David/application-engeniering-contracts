@@ -74,14 +74,13 @@ from sqlalchemy import String, Integer, DateTime, JSON
 from sqlalchemy import Enum as SAEnum
 from sqlalchemy.orm import Mapped, mapped_column
 from my_app.models import db
+from my_app.models.base.identity import IdentityMixin
 from my_app.domain.schedulers.enums import DelayedSchedulerTypeEnum, SchedulerStateEnum, SchedulerOriginSourceEnum
 
 
-class DelayedScheduler(db.Model):
+class DelayedScheduler(IdentityMixin, db.Model):
+    CLIENT_ID_PREFIX = "dsch"
     __tablename__ = "delayed_schedulers"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    client_id: Mapped[str] = mapped_column(String(64), nullable=False, unique=True, index=True)
 
     type: Mapped[DelayedSchedulerTypeEnum] = mapped_column(
         SAEnum(DelayedSchedulerTypeEnum, name="delayed_scheduler_type_enum", create_type=True),
@@ -99,7 +98,7 @@ class DelayedScheduler(db.Model):
         nullable=False,
         default=SchedulerOriginSourceEnum.COMMAND,
     )
-    origin_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    origin_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     event_client_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
 
     scheduled_for: Mapped[datetime] = mapped_column(
@@ -128,14 +127,13 @@ from sqlalchemy import String, Integer, DateTime, JSON
 from sqlalchemy import Enum as SAEnum
 from sqlalchemy.orm import Mapped, mapped_column
 from my_app.models import db
+from my_app.models.base.identity import IdentityMixin
 from my_app.domain.schedulers.enums import RecurringSchedulerTypeEnum, RecurringSchedulerIntervalValueEnum, SchedulerStateEnum, SchedulerOriginSourceEnum
 
 
-class RecurringScheduler(db.Model):
+class RecurringScheduler(IdentityMixin, db.Model):
+    CLIENT_ID_PREFIX = "rsch"
     __tablename__ = "recurring_schedulers"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    client_id: Mapped[str] = mapped_column(String(64), nullable=False, unique=True, index=True)
 
     type: Mapped[RecurringSchedulerTypeEnum] = mapped_column(
         SAEnum(RecurringSchedulerTypeEnum, name="recurring_scheduler_type_enum", create_type=True),
@@ -153,7 +151,7 @@ class RecurringScheduler(db.Model):
         nullable=False,
         default=SchedulerOriginSourceEnum.COMMAND,
     )
-    origin_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    origin_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     event_client_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
 
     interval: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -247,7 +245,7 @@ def _fire_due_schedulers() -> None:
                 task_type=DELAYED_TYPE_TO_TASK_TYPE[scheduler.type],
                 payload=scheduler.payload_snapshot,
                 origin_source=EventTaskOriginSourceEnum.DELAYED_SCHEDULER,
-                origin_id=scheduler.id,
+                origin_id=scheduler.client_id,
                 scheduled_at=scheduler.scheduled_for,
                 event_client_id=scheduler.event_client_id,
             )
@@ -256,7 +254,7 @@ def _fire_due_schedulers() -> None:
         except Exception as exc:
             logger.exception(
                 "Failed to fire delayed_scheduler_id=%s type=%s",
-                scheduler.id, scheduler.type,
+                scheduler.client_id, scheduler.type,
             )
             scheduler.state = SchedulerStateEnum.ERROR
             scheduler.last_error = str(exc)[:1024]
@@ -332,7 +330,7 @@ def _fire_due_recurring_schedulers() -> None:
                 task_type=RECURRING_TYPE_TO_TASK_TYPE[scheduler.type],
                 payload=scheduler.payload_snapshot,
                 origin_source=EventTaskOriginSourceEnum.RECURRING_SCHEDULER,
-                origin_id=scheduler.id,
+                origin_id=scheduler.client_id,
                 scheduled_at=now,
                 event_client_id=scheduler.event_client_id,
             )
@@ -341,7 +339,7 @@ def _fire_due_recurring_schedulers() -> None:
         except Exception as exc:
             logger.exception(
                 "Failed to fire recurring_scheduler_id=%s type=%s",
-                scheduler.id, scheduler.type,
+                scheduler.client_id, scheduler.type,
             )
             scheduler.last_error = str(exc)[:1024]
 
@@ -457,7 +455,7 @@ def schedule_record_reminder(ctx: ServiceContext) -> dict:
             state=EventStateEnum.REQUESTED,
             type=RecordEventTypeEnum.REMINDER,
             created_by_id=ctx.user_id,
-            record_id=record.id,
+            record_id=record.client_id,
         )
         db.session.add(event)
         db.session.flush()
@@ -492,7 +490,7 @@ from my_app.models import db
 import datetime
 
 
-def handle_process_order(raw: dict, task_id: int) -> None:
+def handle_process_order(raw: dict, task_id: str) -> None:
     payload = ProcessOrderPayload(**raw)
     # ... process the order ...
 

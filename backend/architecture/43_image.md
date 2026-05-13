@@ -9,7 +9,7 @@ Four tables compose this module:
 | Table | Purpose |
 |---|---|
 | `images` | The canonical image record — URL, provider, source, dimensions, lifecycle |
-| `image_links` | Polymorphic join — binds an image to any entity via `(entity_type, entity_id)` |
+| `image_links` | Polymorphic join — binds an image to any entity via `(entity_type, entity_client_id)` |
 | `image_annotations` | Structured overlay data on an image (drawings, measurements, AI labels) |
 | `image_events` | Async operation tracking for uploads and syncs (follows the Event mixin → contract 42) |
 
@@ -115,17 +115,17 @@ class Image(IdentityMixin, db.Model):
     height_px:       Mapped[int | None] = mapped_column(Integer,    nullable=True)
     file_size_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
 
-    created_by_id: Mapped[int]      = mapped_column(Integer, ForeignKey("users.id"), nullable=False, index=True)
-    updated_by_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("users.id"), nullable=True)
-    deleted_by_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("users.id"), nullable=True)
+    created_by_id: Mapped[str]      = mapped_column(String(64), ForeignKey("users.client_id"), nullable=False, index=True)
+    updated_by_id: Mapped[str | None] = mapped_column(String(64), ForeignKey("users.client_id"), nullable=True)
+    deleted_by_id: Mapped[str | None] = mapped_column(String(64), ForeignKey("users.client_id"), nullable=True)
 
     created_at: Mapped[datetime]      = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
     updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
 
-    last_event_id: Mapped[int | None] = mapped_column(
-        Integer,
-        ForeignKey("image_events.id", use_alter=True, name="fk_image_last_event_id"),
+    last_event_id: Mapped[str | None] = mapped_column(
+        String(64),
+        ForeignKey("image_events.client_id", use_alter=True, name="fk_image_last_event_id"),
         nullable=True,
     )
 
@@ -144,7 +144,7 @@ class Image(IdentityMixin, db.Model):
 - `file_size_bytes` uses `BigInteger` — matches the naming convention in the file storage contract (34). The unit is bytes, not KB, for precision.
 - `source_reference` is nullable because `EXTERNAL` images may not have a structured provider reference.
 - `deleted_at` is indexed — most list queries filter on `deleted_at IS NULL`.
-- `updated_by_id` is a FK to `users` (not a raw string). The original schema said "string"; a FK is enforced and queryable.
+- `updated_by_id` is a `String(64)` FK to `users.client_id`. The original schema said "raw string"; a FK is enforced and queryable.
 - `last_event_id` uses `use_alter=True` to resolve the circular FK between `images` and `image_events` at the DDL level (see section below).
 
 ---
@@ -165,18 +165,18 @@ class ImageLink(IdentityMixin, db.Model):
     CLIENT_ID_PREFIX = "iml"
     __tablename__    = "image_links"
     __table_args__   = (
-        UniqueConstraint("image_id", "entity_type", "entity_id", name="uq_image_link_image_entity"),
+        UniqueConstraint("image_id", "entity_type", "entity_client_id", name="uq_image_link_image_entity"),
     )
 
-    image_id: Mapped[int] = mapped_column(Integer, ForeignKey("images.id"), nullable=False, index=True)
+    image_id: Mapped[str] = mapped_column(String(64), ForeignKey("images.client_id"), nullable=False, index=True)
 
     entity_type: Mapped[ImageLinkEntityTypeEnum] = mapped_column(
         SAEnum(ImageLinkEntityTypeEnum, name="image_link_entity_type_enum", create_type=True),
         nullable=False,
         index=True,
     )
-    entity_id:     Mapped[int] = mapped_column(Integer, nullable=False, index=True)
-    display_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    entity_client_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    display_order:    Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -193,9 +193,9 @@ An image can be linked to multiple entities. Its position in an item's gallery (
 
 **Polymorphic association trade-off:**
 
-`entity_id` has no database-level FK constraint because it can reference any of several tables. This is intentional — the polymorphic pattern trades referential integrity at the DB layer for flexibility at the application layer. The application must enforce existence before creating a link; orphan cleanup runs via a scheduled job (see contract 37).
+`entity_client_id` has no database-level FK constraint because it can reference any of several tables. This is intentional — the polymorphic pattern trades referential integrity at the DB layer for flexibility at the application layer. The application must enforce existence before creating a link; orphan cleanup runs via a scheduled job (see contract 37).
 
-The `UniqueConstraint` on `(image_id, entity_type, entity_id)` prevents the same image from being linked to the same entity twice.
+The `UniqueConstraint` on `(image_id, entity_type, entity_client_id)` prevents the same image from being linked to the same entity twice.
 
 ---
 
@@ -204,7 +204,7 @@ The `UniqueConstraint` on `(image_id, entity_type, entity_id)` prevents the same
 ```python
 # models/tables/images/image_annotation.py
 from datetime import datetime, timezone
-from sqlalchemy import Integer, DateTime, ForeignKey
+from sqlalchemy import String, Integer, DateTime, ForeignKey
 from sqlalchemy import Enum as SAEnum
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -216,7 +216,7 @@ class ImageAnnotation(IdentityMixin, db.Model):
     CLIENT_ID_PREFIX = "ian"
     __tablename__    = "image_annotations"
 
-    image_id: Mapped[int] = mapped_column(Integer, ForeignKey("images.id"), nullable=False, index=True)
+    image_id: Mapped[str] = mapped_column(String(64), ForeignKey("images.client_id"), nullable=False, index=True)
 
     annotation_type: Mapped[ImageAnnotationTypeEnum] = mapped_column(
         SAEnum(ImageAnnotationTypeEnum, name="image_annotation_type_enum", create_type=True),
@@ -226,7 +226,7 @@ class ImageAnnotation(IdentityMixin, db.Model):
     data:     Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     accuracy: Mapped[int | None]  = mapped_column(Integer, nullable=True)
 
-    created_by_id: Mapped[int]      = mapped_column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    created_by_id: Mapped[str]      = mapped_column(String(64), ForeignKey("users.client_id"), nullable=False, index=True)
     created_at:    Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),
@@ -259,7 +259,7 @@ These shapes are conventions, not enforced at the DB level. Validate in the comm
 
 ```python
 # models/tables/images/image_event.py
-from sqlalchemy import Integer, ForeignKey
+from sqlalchemy import String, ForeignKey
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from my_app.models.base.identity import IdentityMixin
 from my_app.models.base.event import Event
@@ -272,7 +272,7 @@ class ImageEvent(IdentityMixin, Event, db.Model):
     EVENT_ERROR_ENUM = ImageEventErrorEnum
     __tablename__    = "image_events"
 
-    image_id: Mapped[int] = mapped_column(Integer, ForeignKey("images.id"), nullable=False, index=True)
+    image_id: Mapped[str] = mapped_column(String(64), ForeignKey("images.client_id"), nullable=False, index=True)
 
     image:      Mapped["Image"] = relationship("Image", foreign_keys=[image_id], back_populates="events")
     created_by: Mapped["User"] = relationship("User", foreign_keys="[ImageEvent.created_by_id]")
@@ -284,7 +284,7 @@ Follows the Event mixin exactly as specified in contract 42. `EVENT_TYPE_ENUM` a
 
 ## Foundation services
 
-These services are entity-agnostic. They accept `entity_type` and `entity_id` as explicit parameters and contain no application-specific business rules. Authorization, entity existence checks, and per-entity business rules belong in the caller (handler or thin domain command), not here.
+These services are entity-agnostic. They accept `entity_type` and `entity_client_id` as explicit parameters and contain no application-specific business rules. Authorization, entity existence checks, and per-entity business rules belong in the caller (handler or thin domain command), not here.
 
 ### Result types — `domain/images/results.py`
 
@@ -344,7 +344,7 @@ class ImageLinkResult:
     link_client_id: str
     image:          ImageResult
     entity_type:    str
-    entity_id:      int
+    entity_client_id: str
     display_order:  int
 
 
@@ -390,19 +390,19 @@ _PRESIGN_TTL    = 900                # 15 minutes
 def generate_upload_url(ctx: ServiceContext) -> StatusOutcome:
     data         = ctx.incoming_data or {}
     entity_type  = data.get("entity_type")
-    entity_id    = data.get("entity_id")
+    entity_client_id = data.get("entity_client_id")
     file_name    = data.get("file_name", "")
     content_type = data.get("content_type", "")
     size_bytes   = data.get("file_size_bytes")
 
-    if not entity_type or not entity_id:
-        raise ValidationFailed("entity_type and entity_id are required")
+    if not entity_type or not entity_client_id:
+        raise ValidationFailed("entity_type and entity_client_id are required")
     if content_type not in _ALLOWED_CONTENT_TYPES:
         raise ValidationFailed(f"content_type '{content_type}' is not allowed")
     if size_bytes and size_bytes > _MAX_SIZE_BYTES:
         raise ValidationFailed("file exceeds maximum allowed size")
 
-    storage_key = f"images/{entity_type}/{entity_id}/{uuid.uuid4()}"
+    storage_key = f"images/{entity_type}/{entity_client_id}/{uuid.uuid4()}"
     storage     = get_storage_client()
     upload_url  = storage.generate_presigned_put_url(storage_key, content_type, _PRESIGN_TTL)
 
@@ -463,7 +463,7 @@ def confirm_upload(ctx: ServiceContext) -> StatusOutcome:
     data                     = ctx.incoming_data or {}
     pending_upload_client_id = data.get("pending_upload_client_id")
     entity_type_raw          = data.get("entity_type")
-    entity_id                = data.get("entity_id")
+    entity_client_id         = data.get("entity_client_id")
 
     upload = PendingUpload.query.filter_by(client_id=pending_upload_client_id).first()
     if not upload:
@@ -491,27 +491,27 @@ def confirm_upload(ctx: ServiceContext) -> StatusOutcome:
     db.session.add(image)
     db.session.flush()
 
-    next_order = db.session.query(func.count(ImageLink.id)).filter_by(
-        entity_type=entity_type, entity_id=entity_id
+    next_order = db.session.query(func.count(ImageLink.client_id)).filter_by(
+        entity_type=entity_type, entity_client_id=entity_client_id
     ).scalar()
 
     link = ImageLink(
-        image_id      = image.id,
+        image_id      = image.client_id,
         entity_type   = entity_type,
-        entity_id     = entity_id,
+        entity_client_id = entity_client_id,
         display_order = next_order,
     )
     db.session.add(link)
 
     event = ImageEvent(
-        image_id      = image.id,
+        image_id      = image.client_id,
         type          = _ENTITY_EVENT_MAP[entity_type],
         created_by_id = ctx.user_id,
     )
     db.session.add(event)
     db.session.flush()
 
-    image.last_event_id = event.id
+    image.last_event_id = event.client_id
     upload.status       = PendingUploadStatusEnum.CONFIRMED
 
     db.session.commit()
@@ -578,7 +578,7 @@ def unlink_image(ctx: ServiceContext) -> StatusOutcome:
     data            = ctx.incoming_data or {}
     image_client_id = data.get("image_client_id")
     entity_type     = ImageLinkEntityTypeEnum(data.get("entity_type"))
-    entity_id       = data.get("entity_id")
+    entity_client_id = data.get("entity_client_id")
 
     from my_app.models.tables.images.image import Image
     image = Image.query.filter_by(client_id=image_client_id).first()
@@ -586,9 +586,9 @@ def unlink_image(ctx: ServiceContext) -> StatusOutcome:
         raise NotFound("Image not found")
 
     link = ImageLink.query.filter_by(
-        image_id    = image.id,
+        image_id    = image.client_id,
         entity_type = entity_type,
-        entity_id   = entity_id,
+        entity_client_id = entity_client_id,
     ).first()
     if not link:
         raise NotFound("ImageLink not found")
@@ -645,7 +645,7 @@ def create_annotation(ctx: ServiceContext) -> StatusOutcome:
         raise NotFound("Image not found")
 
     annotation = ImageAnnotation(
-        image_id        = image.id,
+        image_id        = image.client_id,
         annotation_type = ann_type,
         data            = payload,
         accuracy        = accuracy,
@@ -676,7 +676,7 @@ from my_app.services.outcome import StatusOutcome
 def reorder_links(ctx: ServiceContext) -> StatusOutcome:
     data                   = ctx.incoming_data or {}
     entity_type            = ImageLinkEntityTypeEnum(data.get("entity_type"))
-    entity_id              = data.get("entity_id")
+    entity_client_id       = data.get("entity_client_id")
     ordered_client_ids     = data.get("ordered_image_client_ids", [])
 
     images = {
@@ -685,14 +685,14 @@ def reorder_links(ctx: ServiceContext) -> StatusOutcome:
     }
     links = {
         link.image_id: link
-        for link in ImageLink.query.filter_by(entity_type=entity_type, entity_id=entity_id).all()
+        for link in ImageLink.query.filter_by(entity_type=entity_type, entity_client_id=entity_client_id).all()
     }
 
     for position, client_id in enumerate(ordered_client_ids):
         image = images.get(client_id)
         if not image:
             raise ValidationFailed(f"image '{client_id}' not found")
-        link = links.get(image.id)
+        link = links.get(image.client_id)
         if not link:
             raise ValidationFailed(f"image '{client_id}' is not linked to this entity")
         link.display_order = position
@@ -781,14 +781,14 @@ from my_app.services.outcome import StatusOutcome
 def list_images_for_entity(ctx: ServiceContext) -> StatusOutcome:
     data        = ctx.incoming_data or {}
     entity_type = ImageLinkEntityTypeEnum(data.get("entity_type"))
-    entity_id   = data.get("entity_id")
+    entity_client_id = data.get("entity_client_id")
 
     rows = (
         db.session.query(ImageLink, Image)
-        .join(Image, Image.id == ImageLink.image_id)
+        .join(Image, Image.client_id == ImageLink.image_id)
         .filter(
             ImageLink.entity_type == entity_type,
-            ImageLink.entity_id   == entity_id,
+            ImageLink.entity_client_id == entity_client_id,
             Image.deleted_at.is_(None),
         )
         .order_by(ImageLink.display_order)
@@ -799,7 +799,7 @@ def list_images_for_entity(ctx: ServiceContext) -> StatusOutcome:
         ImageLinkResult(
             link_client_id = link.client_id,
             entity_type    = link.entity_type.value,
-            entity_id      = link.entity_id,
+            entity_client_id = link.entity_client_id,
             display_order  = link.display_order,
             image          = ImageResult(
                 client_id        = image.client_id,
@@ -837,14 +837,14 @@ Handler (entity-specific)
 
 ## Circular FK — `use_alter`
 
-`Image.last_event_id` → `image_events.id` and `ImageEvent.image_id` → `images.id` form a circular dependency. PostgreSQL cannot create both FKs in the same `CREATE TABLE` pass.
+`Image.last_event_id` → `image_events.client_id` and `ImageEvent.image_id` → `images.client_id` form a circular dependency. PostgreSQL cannot create both FKs in the same `CREATE TABLE` pass.
 
 SQLAlchemy resolves this with `use_alter=True` on the FK that should be added as a separate `ALTER TABLE` after both tables exist:
 
 ```python
-last_event_id: Mapped[int | None] = mapped_column(
-    Integer,
-    ForeignKey("image_events.id", use_alter=True, name="fk_image_last_event_id"),
+last_event_id: Mapped[str | None] = mapped_column(
+    String(64),
+    ForeignKey("image_events.client_id", use_alter=True, name="fk_image_last_event_id"),
     nullable=True,
 )
 ```
@@ -881,7 +881,7 @@ my_app/
         └── images/
             ├── get_download_url.py          # presigned GET URL
             ├── get_image.py                 # single image by client_id
-            └── list_images_for_entity.py    # ordered list for (entity_type, entity_id)
+            └── list_images_for_entity.py    # ordered list for (entity_type, entity_client_id)
 ```
 
 Register all four in `models/__init__.py` under the image section so Alembic detects them:
@@ -915,7 +915,7 @@ The entity table itself does not need any image columns or FKs — all linkage l
 - **`image_url` is the canonical public URL.** For S3 images this may be a presigned URL at write time, but the stored value should be the permanent object key or CDN URL, not a short-lived presigned URL. Generate presigned GET URLs at read time (see contract 34).
 - **Validate `data` shape in the command layer.** The `JSONB` column has no schema constraint. The command for each annotation type is responsible for validating the payload against the expected shape before inserting.
 - **`display_order` is per-link, not per-image.** Always read `display_order` from the `ImageLink` row, not from `Image`. Sort image galleries by `ImageLink.display_order` when querying.
-- **No FK constraint on `entity_id`.** The application must verify the referenced entity exists before creating an `ImageLink`. The scheduled orphan-cleanup job (contract 37) removes links whose `entity_id` no longer exists.
+- **No FK constraint on `entity_client_id`.** The application must verify the referenced entity exists before creating an `ImageLink`. The scheduled orphan-cleanup job (contract 37) removes links whose `entity_client_id` no longer exists.
 - **Workers set `state = IN_PROGRESS` before doing work and `state = COMPLETED` or `state = FAILED` after.** Idempotency guard: if `event.state in (COMPLETED, FAILED)` on entry, return early. See contract 42 for the full worker flow.
 - **`use_alter=True` on `Image.last_event_id` is required.** Removing it breaks the migration on fresh databases.
 - **`source_reference` is nullable.** Set it only when the URL origin is a known structured provider (S3 or Shopify). Leave null for truly external URLs.

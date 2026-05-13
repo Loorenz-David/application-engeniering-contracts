@@ -4,3 +4,7 @@ __pycache__/
 *.pyc
 
 run_test/
+
+planning/
+
+on_implementation/

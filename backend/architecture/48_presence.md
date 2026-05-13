@@ -149,7 +149,7 @@ def _cleanup_presence(ws: WebSocket) -> None:
 
 Creates a new `UserAppViewRecord` and updates the `last_app_view_record_id` pointer on `User`.
 
-The task payload carries `user_id` = the JWT `user_id` claim = `user.client_id`. Resolve to the internal `id` with an identity lookup before writing.
+The task payload carries `user_id` = the JWT `user_id` claim = `user.client_id`. Validate it through the identity lookup before writing.
 
 ```python
 from datetime import datetime, timezone
@@ -158,7 +158,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from my_app.models.tables.users.user import User
 from my_app.models.tables.users.user_app_view_record import UserAppViewRecord
 from my_app.services.infra.execution.db import get_db_session
-from my_app.services.infra.identity import resolve_user_id
+from my_app.services.infra.identity import resolve_user_client_id
 
 
 async def record_view_start_handler(raw: dict) -> None:
@@ -167,20 +167,20 @@ async def record_view_start_handler(raw: dict) -> None:
     entity_client_id = raw["entity_client_id"]
 
     async with get_db_session() as session:
-        user_id = await resolve_user_id(session, user_client_id)
+        resolved_user_id = await resolve_user_client_id(session, user_client_id)
 
         record = UserAppViewRecord(
-            user_id=user_id,
+            user_id=resolved_user_id,
             entity_type=entity_type,
             entity_client_id=entity_client_id,
         )
         session.add(record)
-        await session.flush()   # assign record.id before the pointer update
+        await session.flush()   # assign record.client_id before the pointer update
 
         await session.execute(
             update(User)
-            .where(User.id == user_id)
-            .values(last_app_view_record_id=record.id)
+            .where(User.client_id == resolved_user_id)
+            .values(last_app_view_record_id=record.client_id)
         )
         await session.commit()
 ```
@@ -195,7 +195,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from my_app.models.tables.users.user_app_view_record import UserAppViewRecord
 from my_app.services.infra.execution.db import get_db_session
-from my_app.services.infra.identity import resolve_user_id
+from my_app.services.infra.identity import resolve_user_client_id
 
 
 async def record_view_end_handler(raw: dict) -> None:
@@ -204,12 +204,12 @@ async def record_view_end_handler(raw: dict) -> None:
     entity_client_id = raw["entity_client_id"]
 
     async with get_db_session() as session:
-        user_id = await resolve_user_id(session, user_client_id)
+        resolved_user_id = await resolve_user_client_id(session, user_client_id)
 
         stmt = (
             select(UserAppViewRecord)
             .where(
-                UserAppViewRecord.user_id          == user_id,
+                UserAppViewRecord.user_id          == resolved_user_id,
                 UserAppViewRecord.entity_type      == entity_type,
                 UserAppViewRecord.entity_client_id == entity_client_id,
                 UserAppViewRecord.ended_at.is_(None),
@@ -240,7 +240,7 @@ from my_app.models.tables.users.user_app_view_record import UserAppViewRecord
 async def list_user_view_activity(
     session: AsyncSession,
     *,
-    user_id: int,
+    user_id: str,
     limit: int = 50,
 ) -> list[UserAppViewRecord]:
     stmt = (

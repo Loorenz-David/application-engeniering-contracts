@@ -38,7 +38,7 @@ The role is a property of the **relationship** (user in workspace), not of the u
 │  GLOBAL TABLES (no workspace_id)                                    │
 │                                                                     │
 │  users              — identity: email, password, username           │
-│  roles              — base permission tiers (ADMIN/MEMBER/FIELD)   │
+│  roles              — global permission tiers (ADMIN/MEMBER/FIELD) │
 │                        each role owns UIGroupPermissions +          │
 │                        BackendGroupPermissions — see 28_roles.md    │
 │                                                                     │
@@ -46,7 +46,7 @@ The role is a property of the **relationship** (user in workspace), not of the u
 │                                                                     │
 │  workspaces         — the isolated application instance             │
 │  workspace_roles    — named roles within a workspace, each mapped   │
-│                        to a base Role tier                          │
+│                        to a global permission Role tier              │
 │  workspace_memberships — user ↔ workspace ↔ workspace_role (join)  │
 │                                                                     │
 │  ALL DOMAIN TABLES                                                  │
@@ -132,7 +132,7 @@ class WorkspaceRole(IdentityMixin, db.Model):
     )
 ```
 
-Permission resolution at login: `membership.workspace_role.role` is the base `Role` whose `UIGroupPermissions` and `BackendGroupPermissions` are walked by `resolve_permissions_for_role()`. See [28_roles_permissions.md](28_roles_permissions.md).
+Permission resolution at login: `membership.workspace_role.role` is the permission `Role` whose `UIGroupPermissions` and `BackendGroupPermissions` are walked by `resolve_permissions_for_role()`. See [28_roles_permissions.md](28_roles_permissions.md).
 
 ### `workspace_memberships`
 
@@ -246,7 +246,7 @@ def register_user(ctx: ServiceContext) -> dict:
 def _seed_system_workspace_roles(workspace: Workspace) -> tuple:
     """
     Create the three system WorkspaceRoles for a new workspace.
-    Looks up the global base Role rows by name.
+    Looks up the global permission Role rows by name.
     """
     from my_app.models.tables.roles.role import Role
     from my_app.domain.roles.enums import RoleNameEnum
@@ -283,7 +283,7 @@ The JWT encodes a session scoped to one workspace. It carries all claims needed 
     "user_id":           "usr_01ARZ...",   # user.client_id
     "workspace_id":      "ws_01ARZ...",    # workspace.client_id
     "workspace_role_id": "wsr_01ARZ...",   # workspace_role.client_id
-    "role_name":         "admin",          # base Role.name.value — for @role_required
+    "role_name":         "admin",          # permission Role.name.value — for @role_required
     "app_scope":         "admin",          # surface scope
     "time_zone":         "America/New_York",
     "backend_permissions": ["GET:/api/v1/cases/", ...],
@@ -304,15 +304,15 @@ def build_auth_response(
     app_scope: str,
 ) -> dict:
     workspace_role: WorkspaceRole = membership.workspace_role
-    base_role = workspace_role.role
+    permission_role = workspace_role.role
 
-    permissions = resolve_permissions_for_role(base_role)
+    permissions = resolve_permissions_for_role(permission_role)
 
     claims = {
         "user_id":           user.client_id,
         "workspace_id":      workspace.client_id,
         "workspace_role_id": workspace_role.client_id,
-        "role_name":         base_role.name.value,
+        "role_name":         permission_role.name.value,
         "app_scope":         app_scope,
         "time_zone":         workspace.time_zone or "UTC",
         "backend_permissions": permissions["backend"],

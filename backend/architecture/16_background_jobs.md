@@ -16,9 +16,9 @@ Commands / Schedulers
         │ create execution_task (state: OPEN)
         ▼
 ┌─────────────────────┐
-│    Task Router      │  scans OPEN tasks → publishes task_id to Redis queue
+│    Task Router      │  scans OPEN tasks → publishes task_client_id to Redis queue
 └──────────┬──────────┘
-           │  { "task_id": 123 }
+           │  { "task_client_id": "task_01..." }
            ▼
 ┌─────────────────────┐
 │    Redis Queues     │  transport only — not authoritative
@@ -98,14 +98,13 @@ from sqlalchemy import String, Integer, DateTime, ForeignKey
 from sqlalchemy import Enum as SAEnum
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from my_app.models import db
+from my_app.models.base.identity import IdentityMixin
 from my_app.domain.execution.enums import ExecutionTaskStateEnum, TaskType
 
 
-class ExecutionTask(db.Model):
+class ExecutionTask(IdentityMixin, db.Model):
+    CLIENT_ID_PREFIX = "task"
     __tablename__ = "execution_tasks"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    client_id: Mapped[str] = mapped_column(String(64), nullable=False, unique=True, index=True)
 
     task_type: Mapped[TaskType] = mapped_column(
         SAEnum(TaskType, name="task_type_enum", create_type=True),
@@ -150,26 +149,25 @@ from sqlalchemy import String, Integer, DateTime, ForeignKey, JSON
 from sqlalchemy import Enum as SAEnum
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from my_app.models import db
+from my_app.models.base.identity import IdentityMixin
 from my_app.domain.execution.enums import EventTaskOriginSourceEnum
 
 
-class ExecutionPayload(db.Model):
+class ExecutionPayload(IdentityMixin, db.Model):
+    CLIENT_ID_PREFIX = "epl"
     __tablename__ = "execution_payloads"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    client_id: Mapped[str] = mapped_column(String(64), nullable=False, unique=True, index=True)
 
     origin_source: Mapped[EventTaskOriginSourceEnum] = mapped_column(
         SAEnum(EventTaskOriginSourceEnum, name="event_task_origin_source_enum", create_type=True),
         nullable=False,
     )
-    origin_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    origin_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     event_client_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
 
     payload: Mapped[dict] = mapped_column(JSON, nullable=False)
 
-    execution_task_id: Mapped[int] = mapped_column(
-        Integer, ForeignKey("execution_tasks.id"), nullable=False, unique=True
+    execution_task_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("execution_tasks.client_id"), nullable=False, unique=True
     )
     execution_task: Mapped["ExecutionTask"] = relationship(
         "ExecutionTask", back_populates="payload"
@@ -184,7 +182,7 @@ class ExecutionPayload(db.Model):
 
 **Payload rules:**
 - `payload` is an immutable snapshot captured at the time the task is created. Workers must not modify it.
-- `origin_id` is the integer PK of the scheduler row that created this task (`DelayedScheduler.id` or `RecurringScheduler.id`). It is `None` for instant tasks.
+- `origin_id` is the `client_id` of the scheduler row that created this task (`DelayedScheduler.client_id` or `RecurringScheduler.client_id`). It is `None` for instant tasks.
 - `event_client_id` is the `client_id` of the domain `Event` row this task is serving. `NULL` for tasks with no associated event (recurring reports, batch jobs, etc.). Workers read this column to locate and update the event — never from the payload JSON.
 - Workers read from `payload` only for domain data. They never re-query the source record to re-derive the snapshot.
 
@@ -203,7 +201,7 @@ OPEN ──► PENDING ──► IN_PROGRESS ──► COMPLETED
 | Transition | Who | When |
 |---|---|---|
 | Created → `OPEN` | Command / Scheduler | Task row is inserted |
-| `OPEN` → `PENDING` | Task Router | After publishing task_id to Redis queue |
+| `OPEN` → `PENDING` | Task Router | After publishing `task_client_id` to Redis queue |
 | `PENDING` → `IN_PROGRESS` | Worker | Atomic `UPDATE ... WHERE state='pending'` claim succeeds |
 | `IN_PROGRESS` → `COMPLETED` | Worker | Domain logic succeeded; `completed_at` is set |
 | `IN_PROGRESS` → `RETRY_SCHEDULED` | Worker | Domain logic failed; `try_count < max_try`; `next_retry_at` is set |
@@ -273,10 +271,10 @@ def _route_open_tasks(redis) -> None:
     for task in tasks:
         queue_name = QUEUE_MAP.get(task.task_type)
         if not queue_name:
-            logger.error("No queue mapped for task_type=%s task_id=%s", task.task_type, task.id)
+            logger.error("No queue mapped for task_type=%s task_id=%s", task.task_type, task.client_id)
             continue
 
-        redis.rpush(queue_name, str(task.id))
+        redis.rpush(queue_name, task.client_id)
         task.state = ExecutionTaskStateEnum.PENDING
 
     if tasks:
@@ -306,7 +304,7 @@ def _requeue_retry_scheduled_tasks() -> None:
 ```
 
 **Router rules:**
-- The router publishes only `{"task_id": <int>}` — never the payload. Workers fetch from the DB.
+- The router publishes only `{"task_client_id": <str>}` — never the payload. Workers fetch from the DB.
 - After publishing, the router sets `state = PENDING`. If the publish fails, `state` stays `OPEN` and the task is retried on the next scan.
 - The router also drives the retry cycle: tasks with `state=RETRY_SCHEDULED` and `next_retry_at <= now` are reset to `OPEN`.
 
@@ -319,10 +317,10 @@ Workers subscribe to one or more queues. They do not trust Redis delivery as exe
 ### Worker flow
 
 ```
-1. CONSUME task_id from Redis queue (blocking pop)
+1. CONSUME task_client_id from Redis queue (blocking pop)
 2. CLAIM: UPDATE execution_task
           SET state='in_progress', worker_id=<id>, locked_at=now, started_at=now
-          WHERE id=<task_id> AND state='pending'
+          WHERE client_id=<task_client_id> AND state='pending'
 3. if 0 rows updated → another worker already claimed it → discard and continue
 4. FETCH execution_payload for the task
 5. EXECUTE domain logic
@@ -359,7 +357,7 @@ logger = logging.getLogger(__name__)
 BACKOFF_SECONDS = [30, 120, 300]  # retry intervals by attempt index
 
 
-def run_worker(queue_name: str, handler_map: dict[TaskType, Callable[[dict, int], None]]) -> None:
+def run_worker(queue_name: str, handler_map: dict[TaskType, Callable[[dict, str], None]]) -> None:
     app = create_app("production")
     redis = get_redis_client(app.config["REDIS_URI"])
     worker_id = f"{socket.gethostname()}:{queue_name}:{int(time.time())}"
@@ -372,17 +370,17 @@ def run_worker(queue_name: str, handler_map: dict[TaskType, Callable[[dict, int]
             if not raw:
                 continue
 
-            task_id = int(raw[1])
-            _process_task(task_id, worker_id, handler_map)
+            task_client_id = raw[1].decode() if isinstance(raw[1], bytes) else raw[1]
+            _process_task(task_client_id, worker_id, handler_map)
 
 
-def _process_task(task_id: int, worker_id: str, handler_map: dict[TaskType, Callable[[dict, int], None]]) -> None:
+def _process_task(task_client_id: str, worker_id: str, handler_map: dict[TaskType, Callable[[dict, str], None]]) -> None:
     now = datetime.now(timezone.utc)
 
     # Atomic claim
     rows_updated = (
         db.session.query(ExecutionTask)
-        .filter(ExecutionTask.id == task_id, ExecutionTask.state == ExecutionTaskStateEnum.PENDING)
+        .filter(ExecutionTask.client_id == task_client_id, ExecutionTask.state == ExecutionTaskStateEnum.PENDING)
         .update(
             {
                 "state": ExecutionTaskStateEnum.IN_PROGRESS,
@@ -396,23 +394,23 @@ def _process_task(task_id: int, worker_id: str, handler_map: dict[TaskType, Call
     db.session.commit()
 
     if rows_updated == 0:
-        logger.info("task_id=%s already claimed — skipping", task_id)
+        logger.info("task_id=%s already claimed — skipping", task_client_id)
         return
 
-    task = db.session.get(ExecutionTask, task_id)
+    task = db.session.get(ExecutionTask, task_client_id)
     handler = handler_map.get(task.task_type)
 
     if not handler:
-        logger.error("No handler for task_type=%s task_id=%s", task.task_type, task_id)
+        logger.error("No handler for task_type=%s task_id=%s", task.task_type, task_client_id)
         _mark_failed(task, "No handler registered for task_type.")
         return
 
     try:
-        handler(task.payload.payload, task.id)
+        handler(task.payload.payload, task.client_id)
         task.state = ExecutionTaskStateEnum.COMPLETED
         task.completed_at = datetime.now(timezone.utc)
         db.session.commit()
-        logger.info("task_id=%s completed | type=%s", task_id, task.task_type)
+        logger.info("task_id=%s completed | type=%s", task_client_id, task.task_type)
 
     except Exception as exc:
         _schedule_retry_or_fail(task, exc)
@@ -428,13 +426,13 @@ def _schedule_retry_or_fail(task: ExecutionTask, exc: Exception) -> None:
         task.next_retry_at = datetime.now(timezone.utc) + timedelta(seconds=delay)
         logger.warning(
             "task_id=%s retry_scheduled | attempt=%d next_retry_at=%s",
-            task.id, task.try_count, task.next_retry_at,
+            task.client_id, task.try_count, task.next_retry_at,
         )
     else:
         task.state = ExecutionTaskStateEnum.FAIL
         logger.error(
             "task_id=%s permanently failed | attempt=%d error=%s",
-            task.id, task.try_count, task.last_error,
+            task.client_id, task.try_count, task.last_error,
         )
 
     db.session.commit()
@@ -489,8 +487,8 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class NotificationPayload:
-    recipient_id: int
-    workspace_id: int
+    recipient_id: str
+    workspace_id: str
     channel: str     # "email" | "sms" | "push"
     message: str
 ```
@@ -519,7 +517,7 @@ from my_app.domain.execution.payloads.notification import NotificationPayload
 logger = logging.getLogger(__name__)
 
 
-def handle_notification(raw: dict, task_id: int) -> None:
+def handle_notification(raw: dict, task_id: str) -> None:
     payload = NotificationPayload(**raw)
     # payload is now typed — IDE-complete, validated at entry
     # task_id is available if this handler needs to create a scheduler with origin tracing
@@ -530,9 +528,9 @@ def handle_notification(raw: dict, task_id: int) -> None:
 Deserialising at handler entry means a missing or misnamed key raises `TypeError` immediately, before any side effect is attempted. The worker catches it, records the error, and schedules a retry.
 
 **Handler rules:**
-- Handlers receive `(raw: dict, task_id: int)` — no ORM instances, no `ServiceContext`.
+- Handlers receive `(raw: dict, task_id: str)` — no ORM instances, no `ServiceContext`.
 - First line of every handler: deserialise into the typed payload dataclass.
-- `task_id` is the current `ExecutionTask.id`. Pass it as `origin_id` to `create_delayed_scheduler()` or `create_recurring_scheduler()` when the handler needs to schedule follow-up work.
+- `task_id` is the current `ExecutionTask.client_id`. Pass it as `origin_id` to `create_delayed_scheduler()` or `create_recurring_scheduler()` when the handler needs to schedule follow-up work.
 - Handlers must be idempotent. A handler called twice with the same payload must produce the same outcome.
 - Handlers must not modify the payload.
 - Handlers raise on unrecoverable failure — the worker's retry logic handles it.
@@ -558,7 +556,7 @@ def create_execution_task(
     task_type: TaskType,
     payload: dict,
     origin_source: EventTaskOriginSourceEnum,
-    origin_id: int | None = None,
+    origin_id: str | None = None,
     scheduled_at: datetime | None = None,
     event_client_id: str | None = None,
     max_try: int = 3,
@@ -579,7 +577,7 @@ def create_execution_task(
         origin_id=origin_id,
         event_client_id=event_client_id,
         payload=payload,
-        execution_task_id=task.id,
+        execution_task_id=task.client_id,
         created_at=now,
     ))
     return task
@@ -600,7 +598,7 @@ def create_instant_task(
     )
 ```
 
-`create_instant_task()` is a thin convenience wrapper for commands. Scheduler runners call `create_execution_task()` directly, passing their `origin_source` and `origin_id`.
+`create_instant_task()` is a thin convenience wrapper for commands. Scheduler runners call `create_execution_task()` directly, passing their `origin_source` and scheduler `client_id` as `origin_id`.
 
 ---
 
@@ -644,7 +642,7 @@ The task is committed in the same transaction as the domain write. If the write 
 All handlers must guard against duplicate execution. When the task is backed by a domain `Event` row, the event state is the idempotency guard — no separate flag needed:
 
 ```python
-def handle_notification(raw: dict, task_id: int) -> None:
+def handle_notification(raw: dict, task_id: str) -> None:
     payload = NotificationPayload(**raw)
 
     execution_payload = (
@@ -742,8 +740,8 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class MyNewTaskPayload:
-    entity_id: int
-    workspace_id: int
+    entity_client_id: str
+    workspace_id: str
     # ... whatever the handler needs
 ```
 

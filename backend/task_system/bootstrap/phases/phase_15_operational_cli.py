@@ -6,7 +6,7 @@ from bootstrap.writer import append_once, replace_once, touch_file as _touch, wr
 
 
 def _phase15_operational_cli(root: Path, a: str, force: bool) -> None:
-    typer.echo("\n-- Phase 15 - Operational CLI --------------------------------------")
+    typer.echo("\n-- Phase 16 - Operational CLI --------------------------------------")
 
     _touch(root / a / "operations" / "__init__.py", force=force)
     _touch(root / a / "cli" / "__init__.py", force=force)

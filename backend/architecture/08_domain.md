@@ -102,11 +102,11 @@ def validate_date_range(start: datetime, end: datetime) -> None:
         raise ValidationFailed("The date range must span at least one hour.")
 
 
-def validate_required_fields(name: str, category_id: int | None) -> None:
+def validate_required_fields(name: str, category_id: str | None) -> None:
     if not name or not name.strip():
         raise ValidationFailed("Name is required and cannot be blank.")
-    if category_id is not None and category_id <= 0:
-        raise ValidationFailed("Category ID must be a positive integer.")
+    if category_id is not None and not category_id.strip():
+        raise ValidationFailed("Category ID cannot be blank.")
 ```
 
 ### In-memory calculation

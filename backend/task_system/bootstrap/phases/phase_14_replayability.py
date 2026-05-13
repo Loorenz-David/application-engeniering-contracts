@@ -6,7 +6,7 @@ from bootstrap.writer import append_once, touch_file as _touch, write_file as _w
 
 
 def _phase14_replayability(root: Path, a: str, force: bool) -> None:
-    typer.echo("\n-- Phase 14 - Replayability ----------------------------------------")
+    typer.echo("\n-- Phase 15 - Replayability ----------------------------------------")
 
     _touch(root / a / "replay" / "__init__.py", force=force)
     _touch(root / a / "event_store" / "__init__.py", force=force)
