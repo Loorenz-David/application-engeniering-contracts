@@ -304,6 +304,28 @@ echo "  ✓ APP_MODULE=$APP_SLUG written to .env"
 echo ""
 
 # ============================================================================
+# 6b. COPY TEST SUITE + REPLACE PLACEHOLDERS
+# (done here — before Docker/migrations — so a later failure cannot skip it)
+# ============================================================================
+
+if [ -d "$CANONICAL_TESTS_DIR" ]; then
+  mkdir -p "$TESTS_DEST_DIR"
+  cp -r "$CANONICAL_TESTS_DIR/bootstrap_tests" "$TESTS_DEST_DIR/"
+  mkdir -p "$TESTS_DEST_DIR/test_summary"
+  # Replace the canonical my_app placeholder with the real module slug.
+  # grep -rl locates every file containing the token; xargs sed rewrites them.
+  if [[ "$OSTYPE" == "darwin"* ]]; then
+    grep -rl "my_app" "$TESTS_DEST_DIR/bootstrap_tests" | xargs sed -i '' "s/my_app/$APP_SLUG/g"
+  else
+    grep -rl "my_app" "$TESTS_DEST_DIR/bootstrap_tests" | xargs sed -i "s/my_app/$APP_SLUG/g"
+  fi
+  echo "  ✓ Test suite ready at $TESTS_DEST_DIR (my_app → $APP_SLUG)"
+else
+  echo "  ⚠ Canonical tests not found at $CANONICAL_TESTS_DIR — skipping"
+fi
+echo ""
+
+# ============================================================================
 # 7. START DOCKER SERVICES + DATABASE SETUP
 # ============================================================================
 
@@ -343,13 +365,22 @@ export APP_ENV=development
 if command -v make &>/dev/null && [ -f "Makefile" ]; then
   make db-migrate
   echo "  ✓ Migrations complete"
-  make db-triggers
-  echo "  ✓ Triggers applied"
+  # db-triggers is optional — not all generated Makefiles include it
+  if make -n db-triggers >/dev/null 2>&1; then
+    make db-triggers
+    echo "  ✓ Triggers applied"
+  else
+    echo "  ○ db-triggers not in Makefile — skipping"
+  fi
 else
   if command -v alembic &>/dev/null; then
     alembic upgrade head
-    PYTHONPATH=. python scripts/apply_db_triggers.py
-    echo "  ✓ Migrations and triggers complete"
+    if [ -f "scripts/apply_db_triggers.py" ]; then
+      PYTHONPATH=. python scripts/apply_db_triggers.py
+      echo "  ✓ Migrations and triggers complete"
+    else
+      echo "  ✓ Migrations complete (no trigger script found)"
+    fi
   else
     echo "  ⚠ alembic not available — run migrations manually"
   fi
@@ -360,24 +391,7 @@ echo ""
 # 9. COPY TEST SUITE + VERIFY HEALTH
 # ============================================================================
 
-echo "[9/9] Installing test suite and verifying app..."
-
-# Copy canonical tests into project
-if [ -d "$CANONICAL_TESTS_DIR" ]; then
-  mkdir -p "$TESTS_DEST_DIR"
-  cp -r "$CANONICAL_TESTS_DIR/bootstrap_tests" "$TESTS_DEST_DIR/"
-  mkdir -p "$TESTS_DEST_DIR/test_summary"
-  # Replace the canonical my_app placeholder with the real module slug.
-  # grep -rl locates every file containing the token; xargs sed rewrites them.
-  if [[ "$OSTYPE" == "darwin"* ]]; then
-    grep -rl "my_app" "$TESTS_DEST_DIR" | xargs sed -i '' "s/my_app/$APP_SLUG/g"
-  else
-    grep -rl "my_app" "$TESTS_DEST_DIR" | xargs sed -i "s/my_app/$APP_SLUG/g"
-  fi
-  echo "  ✓ Test suite installed at $TESTS_DEST_DIR (my_app → $APP_SLUG)"
-else
-  echo "  ⚠ Canonical tests not found at $CANONICAL_TESTS_DIR — skipping"
-fi
+echo "[9/9] Verifying app health..."
 
 # Health check
 echo "  → Starting app to verify health..."
