@@ -121,6 +121,79 @@ async def run_service(
         )
 """, force=force)
 
+    # ── Canonical request parser scaffold ────────────────────────────────────
+    # Lives at services/commands/_canonical/ in every generated app.
+    # This is the ground-truth reference for AI agents and developers:
+    # always copy from here, never invent a new pattern.
+    _touch(root / a / "services" / "commands" / "_canonical" / "__init__.py", force=force)
+    _touch(root / a / "services" / "commands" / "_canonical" / "requests" / "__init__.py", force=force)
+    _write(root / a / "services" / "commands" / "_canonical" / "requests" / "create_record_request.py", f"""\
+# CANONICAL REFERENCE — copy this file for every new request parser.
+#
+# Rules (enforced by contract 06_commands):
+#   1. @field_validator handles blank checks and normalization — raises ValueError only.
+#   2. parse_<name>_request calls model_validate directly — no intermediate classmethod.
+#   3. The parse function is the ONLY place PydanticValidationError → ValidationError.
+#   4. Never add a validate_fields classmethod — that creates a second entry point.
+from pydantic import BaseModel, ValidationError as PydanticValidationError, field_validator
+
+from {a}.errors.validation import ValidationError
+
+
+class RecordCreateRequest(BaseModel):
+    name: str
+    category_id: str | None = None
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def normalize_name(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("name must not be blank.")
+        return v
+
+    @field_validator("category_id")
+    @classmethod
+    def category_id_must_not_be_blank(cls, v: str | None) -> str | None:
+        if v is not None and not v.strip():
+            raise ValueError("category_id cannot be blank if provided.")
+        return v
+
+
+def parse_create_record_request(data: dict) -> RecordCreateRequest:
+    try:
+        return RecordCreateRequest.model_validate(data)
+    except PydanticValidationError as exc:
+        first_error = exc.errors()[0]
+        field = ".".join(str(loc) for loc in first_error["loc"])
+        raise ValidationError(f"{{field}}: {{first_error['msg']}}") from exc
+""", force=force)
+    _write(root / a / "services" / "commands" / "_canonical" / "create_record.py", f"""\
+# CANONICAL REFERENCE — copy this file for every new command.
+#
+# Rules (enforced by contract 06_commands):
+#   1. Parse request before opening the transaction.
+#   2. All DB reads and writes go inside async with ctx.session.begin().
+#   3. Event dispatch happens AFTER the begin() block exits (after commit).
+#   4. Never read ctx.incoming_data directly inside the command body.
+from {a}.services.commands._canonical.requests.create_record_request import (
+    RecordCreateRequest,
+    parse_create_record_request,
+)
+from {a}.services.context import ServiceContext
+
+
+async def create_record(ctx: ServiceContext) -> dict:
+    request: RecordCreateRequest = parse_create_record_request(ctx.incoming_data)
+
+    async with ctx.session.begin():
+        # All DB reads and writes here — never ctx.incoming_data inside this block.
+        pass
+
+    # Event dispatch here, after commit.
+    return {{}}
+""", force=force)
+
     # ── WorkContext ───────────────────────────────────────────────────────────
     _write(root / a / "services" / "work_context.py", """\
 from dataclasses import dataclass, field

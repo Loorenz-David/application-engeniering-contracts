@@ -110,6 +110,35 @@ def parse_create_record_request(data: dict) -> RecordCreateRequest:
 
 Pydantic V2 (`model_validate`) is the standard. Convert `ValidationError` into `ValidationFailed` inside the parser so it crosses layer boundaries correctly.
 
+### Rules — enforced by contract
+
+1. **One parse entry point**: `parse_<name>_request(data)` calls `model_validate(data)` directly. There is no intermediate classmethod.
+2. **Validators on the model**: blank checks and normalization go in `@field_validator` methods. They raise `ValueError` — Pydantic converts this into a `ValidationError` automatically.
+3. **Domain error conversion in the parser only**: the `parse_` function is the only place that converts `PydanticValidationError` into a domain `ValidationError`. The model itself never raises domain errors.
+4. **No `validate_fields` classmethod**: do not add a custom classmethod that calls `model_validate` internally — this creates two entry points and means domain errors escape the model layer uncaught.
+
+### Anti-pattern — do NOT do this
+
+```python
+# WRONG: two entry points; model raises a domain error directly
+class MyRequest(BaseModel):
+    name: str
+
+    @classmethod
+    def validate_fields(cls, data: dict) -> "MyRequest":
+        if not data.get("name", "").strip():
+            raise ValidationError("name must not be blank.")   # domain error inside model — wrong
+        return cls.model_validate(data)                        # second entry point — wrong
+
+def parse_my_request(data: dict) -> MyRequest:
+    try:
+        return MyRequest.validate_fields(data)   # should call model_validate directly
+    except PydanticValidationError as exc:       # domain errors from validate_fields slip through
+        ...
+```
+
+The `validate_fields` classmethod is a known AI over-engineering pattern introduced to "cleanly separate" structural and business validation. The `@field_validator` decorator already provides that separation — no extra method is needed.
+
 ---
 
 ## Transaction boundaries
