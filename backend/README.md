@@ -2,6 +2,40 @@
 
 This folder is the backend-encapsulated entry surface for new applications.
 
+## Dev quick-start — running the full stack
+
+From `backend/app/` — one terminal per process:
+
+```bash
+# 1. API server
+make run
+
+# 2. Task router  (routes tasks via Postgres LISTEN/NOTIFY)
+make task-router
+
+# 3. Worker       (executes tasks from the queue)
+make worker-dev
+
+# 4. Delayed scheduler   (one-shot scheduled tasks)
+make delayed-scheduler
+
+# 5. Recurring scheduler (cron-style tasks)
+make recurring-scheduler
+```
+
+Minimum for basic development: terminals 1–3.  
+Terminals 4–5 only matter when testing scheduled task features.
+
+Run the bootstrap test suite (from `backend/`):
+
+```bash
+bash tests/bootstrap_tests/run_all.sh
+```
+
+`run_all.sh` starts all processes automatically if they are not already running.
+
+---
+
 ## Terminology
 
 Use these terms consistently:
