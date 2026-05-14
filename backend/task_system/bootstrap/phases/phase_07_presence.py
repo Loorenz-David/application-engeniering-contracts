@@ -53,16 +53,17 @@ def get_viewers(entity_type: str, entity_client_id: str) -> set[str]:
 """, force=force)
 
     _write(root / a / "services" / "tasks" / "presence" / "record_view_start.py", f"""\
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
 
+from {a}.config import settings
 from {a}.models.tables.users.user import User
 from {a}.models.tables.users.user_app_view_record import UserAppViewRecord
 from {a}.services.infra.execution.db import task_db_session
 
 
-async def handle_record_view_start(payload: dict) -> None:
+async def handle_record_view_start(payload: dict, task_id: str) -> None:
     user_client_id = payload.get("user_id")
     entity_type = payload.get("entity_type")
     entity_client_id = payload.get("entity_client_id")
@@ -72,11 +73,26 @@ async def handle_record_view_start(payload: dict) -> None:
         user = (await session.execute(select(User).where(User.client_id == user_client_id))).scalar_one_or_none()
         if user is None:
             return
+
+        now = datetime.now(timezone.utc)
+        debounce_cutoff = now - timedelta(seconds=settings.presence_debounce_seconds)
+        existing = (await session.execute(
+            select(UserAppViewRecord).where(
+                UserAppViewRecord.user_id == user.client_id,
+                UserAppViewRecord.entity_type == entity_type,
+                UserAppViewRecord.entity_client_id == entity_client_id,
+                UserAppViewRecord.ended_at.is_(None),
+                UserAppViewRecord.started_at >= debounce_cutoff,
+            ).limit(1)
+        )).scalar_one_or_none()
+        if existing is not None:
+            return  # within debounce window — extend the existing record silently
+
         record = UserAppViewRecord(
             user_id=user.client_id,
             entity_type=entity_type,
             entity_client_id=entity_client_id,
-            started_at=datetime.now(timezone.utc),
+            started_at=now,
         )
         session.add(record)
         await session.flush()
@@ -93,7 +109,7 @@ from {a}.models.tables.users.user_app_view_record import UserAppViewRecord
 from {a}.services.infra.execution.db import task_db_session
 
 
-async def handle_record_view_end(payload: dict) -> None:
+async def handle_record_view_end(payload: dict, task_id: str) -> None:
     user_client_id = payload.get("user_id")
     entity_type = payload.get("entity_type")
     entity_client_id = payload.get("entity_client_id")

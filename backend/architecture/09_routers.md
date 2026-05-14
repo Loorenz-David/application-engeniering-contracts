@@ -116,6 +116,26 @@ async def create_record_route(
     return build_ok(outcome.data, warnings=ctx.warnings)
 ```
 
+## Route declaration order
+
+FastAPI matches routes in declaration order. **Static paths and collection-level routes must always be declared before wildcard path-parameter routes** (`/{id}`). A static segment like `/unread-counts` or `/links` will be silently captured as a path parameter value if a wildcard route is declared first.
+
+Correct order for a resource router:
+
+```python
+@router.post("")          # collection create
+@router.get("")           # collection list
+@router.get("/unread-counts")   # static sub-path — must come BEFORE /{id}
+@router.delete("/links")        # static sub-path — must come BEFORE /{id}
+@router.post("/reorder")        # static sub-path — must come BEFORE /{id}
+@router.get("/{resource_id}")   # wildcard — declared LAST among single-segment routes
+@router.patch("/{resource_id}")
+@router.delete("/{resource_id}")
+@router.get("/{resource_id}/sub-resource")  # multi-segment wildcards are safe after
+```
+
+Routes with a multi-segment static prefix (e.g. `/conversations/{id}/messages`) do not conflict with `/{id}` and can appear anywhere, but are conventionally grouped after the single-segment wildcard routes.
+
 ## Path parameter routes
 
 URL path parameters are **merged into `ctx.incoming_data`** before calling `run_service`. Path params are logically part of the command or query input and are owned by the service layer, not the router.

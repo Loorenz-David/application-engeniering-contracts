@@ -64,13 +64,25 @@ Role names come from `RoleNameEnum` through the active membership (`WorkspaceMem
 
 ```python
 # routers/utils/jwt_dep.py
+import threading
+import time
+from cachetools import TTLCache
 from fastapi import Depends, HTTPException
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 import jwt
 from my_app.config import settings
-from my_app.services.infra.redis import get_redis_client
 
 _bearer = HTTPBearer()
+
+# Per-process LRU+TTL cache for verified claims.
+# Avoids one Redis round-trip per request at the cost of up to _CLAIM_CACHE_TTL
+# seconds of staleness after a token is blocklisted. Acceptable for all
+# non-critical paths — sensitive operations (logout, role change) blocklist
+# immediately and rely on the TTL window draining.
+_CLAIM_CACHE_MAXSIZE = 2000
+_CLAIM_CACHE_TTL     = 60   # seconds
+_claim_cache: TTLCache = TTLCache(maxsize=_CLAIM_CACHE_MAXSIZE, ttl=_CLAIM_CACHE_TTL)
+_cache_lock  = threading.Lock()
 
 
 async def get_jwt_claims(
@@ -79,8 +91,14 @@ async def get_jwt_claims(
     """Validates the Bearer token and returns its decoded claims.
 
     Raises HTTP 401 if the token is missing, invalid, expired, or blocklisted.
+    Caches verified claims per process for up to _CLAIM_CACHE_TTL seconds.
     """
     token = credentials.credentials
+
+    with _cache_lock:
+        if token in _claim_cache:
+            return _claim_cache[token]
+
     try:
         claims = jwt.decode(
             token,
@@ -93,6 +111,9 @@ async def get_jwt_claims(
     jti = claims.get("jti")
     if jti and await _is_blocklisted(jti):
         raise HTTPException(status_code=401, detail="Token has been revoked.")
+
+    with _cache_lock:
+        _claim_cache[token] = claims
 
     return claims
 
@@ -122,9 +143,10 @@ def require_app_scope(required_scope: str | list[str]):
 
 
 async def _is_blocklisted(jti: str) -> bool:
-    r = get_redis_client(settings.redis_uri)
+    from my_app.services.infra.redis.async_client import get_async_redis
+    redis  = get_async_redis()
     prefix = settings.redis_key_prefix
-    return r.exists(f"{prefix}:auth:blocklist:{jti}") == 1
+    return await redis.exists(f"{prefix}:auth:blocklist:{jti}") == 1
 ```
 
 **Usage on protected routes:**

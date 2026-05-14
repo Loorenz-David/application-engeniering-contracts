@@ -12,6 +12,7 @@ This file defines deterministic routing from task intent to backend skill path.
 - review: `review|audit|inspect|assess`
 - replay: `replay|reprocess|recover|dead letter|dlq|retry`
 - clarify: `clarify|unclear|ambiguous|not sure|ask|question|confirm|scope`
+- intention: `intention|intention plan|outcome|goal planning|strategic plan|aim|objective|why we`
 - align: `plan|planning|intent|goal|approach|strategy|shape`
 - lifecycle: `workflow|lifecycle|handoff|archive|summary|implement|implementation stage`
 - debugloop: `debug|bug|fix|regression|incident|nested`
@@ -45,6 +46,7 @@ This file defines deterministic routing from task intent to backend skill path.
 | notifications | write | `backend/skills/domains/notifications/add_notification_flow/SKILL.md` |
 | presence | write | `backend/skills/domains/presence/add_presence_feature/SKILL.md` |
 | events | replay | `backend/skills/domains/events/replay_reprocess/SKILL.md` |
+| any | intention | `backend/skills/cross_cutting/intention_planning/SKILL.md` |
 | any | align | `backend/skills/cross_cutting/goal_intent_alignment/SKILL.md` |
 | any | clarify | `backend/skills/cross_cutting/ask_clarification_first/SKILL.md` |
 | any | lifecycle | `backend/skills/cross_cutting/plan_lifecycle_orchestrator/SKILL.md` |
@@ -60,9 +62,10 @@ When multiple skills match, apply this priority:
 2. `replay` operation wins over generic write/read for events.
 3. `clarify` wins when the user explicitly asks for clarification before coding.
 4. `debugloop` wins over generic lifecycle when defect language is explicit.
-5. Endpoint requests choose `add_router_endpoint` even if write/read keywords also appear.
-6. If two domains match, prefer the first domain term mentioned by the user.
-7. If still ambiguous, route to `ask_clarification_first` before planning fallback.
+5. `intention` wins over `align` when the user is focused on goals/outcomes rather than approach.
+6. Endpoint requests choose `add_router_endpoint` even if write/read keywords also appear.
+7. If two domains match, prefer the first domain term mentioned by the user.
+8. If still ambiguous, route to `ask_clarification_first` before planning fallback.
 
 ## Output contract
 

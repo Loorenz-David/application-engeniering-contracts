@@ -20,21 +20,32 @@ summary, archive, and debugging loops.
 
 ## Contracts to load
 
-- `backend/skills/_shared/plan_lifecycle_contract.md`: lifecycle states and transitions
+- `backend/skills/_shared/plan_lifecycle_contract.md`: lifecycle states and transitions (both plan types)
 - `backend/architecture/23_documentation.md`: documentation discipline
 - `backend/architecture/29_feature_workflow.md`: feature workflow alignment
 - `backend/task_system/backend_contract_goal_mapping_guide.md`: baseline contract routing
 
+## Related skills
+
+- `backend/skills/cross_cutting/intention_planning/SKILL.md`: use when creating or updating intention plans
+
 ## Execution protocol
 
-1. Create or update plan in `backend/docs/architecture/under_construction/`.
-2. Run clarification-first checks to avoid requirement invention.
-3. Review and correct plan until approved.
-4. Execute implementation (current or delegated agent).
-5. Write summary in `backend/docs/architecture/implemented_summaries/`.
-6. Create archive record in `backend/docs/architecture/archives/`.
-7. If defects appear, create nested debug plan in `backend/docs/debugging/`.
-8. Repeat review -> implement -> summary -> archive for debug iteration.
+1. Determine plan type before creating:
+   - Goal/outcome driven → use intention plan first (`intention_planning` skill).
+   - Task/implementation driven → use implementation plan directly.
+2. Create or update plan in the correct subfolder:
+   - Intention: `backend/docs/architecture/under_construction/intention/`
+   - Implementation: `backend/docs/architecture/under_construction/implementation/`
+3. Link implementation plan back to its intention plan in the metadata field.
+4. Run clarification-first checks to avoid requirement invention.
+5. Review and correct plan until approved.
+6. Execute implementation (current or delegated agent).
+7. Write summary in `backend/docs/architecture/implemented_summaries/`.
+8. Create archive record in `backend/docs/architecture/archives/`.
+9. Update the intention plan's "Linked implementation plans" table and progress notes.
+10. If defects appear, create nested debug plan in `backend/docs/debugging/`.
+11. Repeat review -> implement -> summary -> archive for debug iteration.
 
 ## Handoff protocol
 

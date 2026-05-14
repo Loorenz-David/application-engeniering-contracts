@@ -238,22 +238,29 @@ cd /path/to/Manager-app/backend/app
 APP_ENV=development make db-migrate
 ```
 
+### Apply Postgres triggers
+
+Install the LISTEN/NOTIFY trigger (run once after migrations, re-run after schema re-creation):
+
+```bash
+APP_ENV=development make db-triggers
+```
+
 ### Start the application
 
-Launch the FastAPI app with hot reload:
+Launch the FastAPI app (port auto-detected, defaults to 8000):
 
 ```bash
 cd /path/to/Manager-app/backend/app
 APP_ENV=development make run
 ```
 
-The app will start on `http://localhost:5000` by default. Verify it's running:
+Verify it's running:
 
 ```bash
-curl http://localhost:5000/health
+curl http://localhost:8000/health
+# Expected: {"status":"ok","services":{"db":"ok","redis":"ok"}}
 ```
-
-You should see a JSON response with status information.
 
 ### Complete workflow
 
@@ -261,8 +268,30 @@ Or combine all steps in one go:
 
 ```bash
 cd /path/to/Manager-app/backend/app
-APP_ENV=development make dev-up && make db-init && make db-migrate && make run
+APP_ENV=development make dev-up && make db-init && make db-migrate && make db-triggers && make run
 ```
+
+### Production deployment
+
+Before every deploy to production, run migrations and triggers:
+
+```bash
+make pre-deploy   # alembic upgrade head + apply_db_triggers.py
+```
+
+Then start all processes. The generated `Procfile` at the app root defines all five:
+
+```
+web:                  python run.py
+worker:               python worker.py
+task-router:          python my_app/workers/task_router_process.py
+delayed-scheduler:    python my_app/workers/delayed_scheduler_runner.py
+recurring-scheduler:  python my_app/workers/recurring_scheduler_runner.py
+```
+
+Drive it with `supervisord`, `honcho`, or any Procfile-compatible process manager.
+
+Hot reload is **off by default** (`UVICORN_RELOAD=0`). For local development, `.env.local` sets `UVICORN_RELOAD=1` automatically.
 
 ### Stop services (when done)
 

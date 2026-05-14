@@ -86,12 +86,14 @@ from {a}.services.infra.events.domain_event import (
 def build_workspace_event(
     entity,
     event_name: str,
+    *,
+    workspace_id: str | None = None,
     extra: dict | None = None,
 ) -> WorkspaceEvent:
     return WorkspaceEvent(
         event_name=event_name,
         client_id=entity.client_id,
-        workspace_id=entity.workspace_id,
+        workspace_id=workspace_id or getattr(entity, "workspace_id", None),
         extra=extra or {{}},
     )
 
@@ -234,17 +236,14 @@ async def handle(event) -> None:
 import logging
 from datetime import datetime, timezone
 
+from {a}.services.infra.audit.audited_events import get_audited_events
 from {a}.services.infra.events.domain_event import Event
 
 logger = logging.getLogger(__name__)
 
-# Populate with audited event names in local extensions.
-# e.g. _AUDITED_EVENTS = {{"workspace.member.removed", "user.erased"}}
-_AUDITED_EVENTS: set[str] = set()
-
 
 async def handle(event: Event) -> None:
-    if not _AUDITED_EVENTS or event.event_name not in _AUDITED_EVENTS:
+    if event.event_name not in get_audited_events():
         return
 
     workspace_id = getattr(event, "workspace_id", event.extra.get("workspace_id"))
@@ -494,8 +493,8 @@ app = sockets_module.socket_app
     # Register event handlers during lifespan startup
     replace_once(
         root / a / "__init__.py",
-        "    from {a}.models.database import init_db, close_db\n    await init_db()\n    yield\n    await close_db()\n".replace("{a}", a),
-        f"    from {a}.models.database import init_db, close_db\n    await init_db()\n    _register_event_handlers()\n    yield\n    await close_db()\n",
+        "    yield\n    await close_db()\n",
+        "    _register_event_handlers()\n    yield\n    await close_db()\n",
     )
     replace_once(
         root / a / "__init__.py",

@@ -123,12 +123,55 @@ CLI commands must not hide queue wiring or task registration behavior.
 
 ---
 
+## Graceful Shutdown
+
+Workers must handle `SIGTERM` to avoid leaving tasks stuck in `IN_PROGRESS` until stale recovery fires (90 min). On signal receipt, the worker stops accepting new tasks, rescues any in-flight task to `RETRY_SCHEDULED`, and exits cleanly.
+
+```python
+import signal
+import asyncio
+
+_shutdown_event: asyncio.Event = asyncio.Event()
+
+
+def _register_shutdown_handler() -> None:
+    loop = asyncio.get_event_loop()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        loop.add_signal_handler(sig, _shutdown_event.set)
+
+
+async def run_worker(queue_name: str, handler_map: dict) -> None:
+    _register_shutdown_handler()
+    current_task_id: str | None = None
+    try:
+        while not _shutdown_event.is_set():
+            raw = redis.blpop(queue_name, timeout=2)   # short timeout so shutdown is responsive
+            if not raw:
+                continue
+            current_task_id = raw[1] if isinstance(raw[1], str) else raw[1].decode()
+            await _process_task(current_task_id, worker_id, handler_map)
+            current_task_id = None
+    finally:
+        if current_task_id:
+            await _rescue_in_flight_task(current_task_id)
+        logger.info("worker.shutdown | queue=%s worker_id=%s", queue_name, worker_id)
+```
+
+**Rules:**
+- `blpop` timeout must be ≤ 2s. A longer timeout delays shutdown detection and leaves the container in a terminating state longer than necessary.
+- `_rescue_in_flight_task` runs in a `finally` block — it executes even on unhandled exceptions, not just clean SIGTERM.
+- The rescued task enters `RETRY_SCHEDULED` with a short delay (30s), not `OPEN`. This prevents immediate re-claim by another worker before the dying process has fully released its resources.
+- Emit a `worker.shutdown` structured log on every exit so ops teams can correlate rescues with deployments.
+
+---
+
 ## Anti-Patterns
 
 - implicit task discovery
 - retry loops without max bound
 - swallowing worker exceptions without structured logs
 - non-deterministic retry timing driven by hidden globals
+- missing SIGTERM handler — leaves tasks stuck IN_PROGRESS until stale threshold
 
 ---
 

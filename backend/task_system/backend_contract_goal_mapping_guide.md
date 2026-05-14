@@ -64,11 +64,16 @@ Add:
 
 ## Trigger expansion map
 
-- "worker", "retry", "dead letter", "dlq" -> `16`, `12`, `51`
+- "worker", "retry", "dead letter", "dlq", "stale task" -> `16`, `12`, `51`
 - "replay", "reprocess", "recover" -> `52`, `11`, `16`, `53`
 - "observability", "correlation", "structured logs" -> `49`, `17`, `31`
 - "ci", "pipeline", "readiness" -> `54`, `33`, `31`, `30`
-- "deterministic testing", "fixture isolation" -> `50`, `15`, `30`
+- "deterministic testing", "fixture isolation", "n+1" -> `50`, `15`, `30`
+- "rate limit", "rate limiting" -> `18`, `12`
+- "timeout", "request timeout" -> `02`
+- "cache", "query cache", "result cache" -> `07`, `12`
+- "bulk insert", "batch write" -> `22`
+- "multipart", "large file upload" -> `34`
 
 ## Output format (required before coding)
 

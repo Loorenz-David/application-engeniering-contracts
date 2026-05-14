@@ -144,6 +144,64 @@ On every request, the JWT decode hook checks for the blocklist entry and rejects
 
 ---
 
+## Async Redis client
+
+Background workers and async handlers use `redis.asyncio`:
+
+```python
+# services/infra/redis/async_client.py
+from redis.asyncio import Redis as AsyncRedis
+from my_app.config import settings
+
+_async_client: AsyncRedis | None = None
+
+
+def get_async_redis() -> AsyncRedis:
+    global _async_client
+    if _async_client is None:
+        _async_client = AsyncRedis.from_url(settings.redis_url, decode_responses=True)
+    return _async_client
+```
+
+Use `get_async_redis()` in async contexts (socket handlers, background tasks). The synchronous `get_redis_client()` is for startup validation and sync contexts only. Never mix sync and async clients in the same call path.
+
+---
+
+## Memory and eviction policy
+
+Production Redis **must** have a memory limit and eviction policy configured. Without this, Redis fills memory and either crashes or rejects writes — silently dropping task queue items.
+
+**Required configuration (set in `docker-compose.yml` or cloud provider):**
+
+```yaml
+# docker-compose.yml
+redis:
+  image: redis:7-alpine
+  command: redis-server --maxmemory 1gb --maxmemory-policy allkeys-lru
+```
+
+Or via `redis-cli` on a running instance:
+
+```bash
+redis-cli CONFIG SET maxmemory 1gb
+redis-cli CONFIG SET maxmemory-policy allkeys-lru
+redis-cli CONFIG REWRITE   # persist to redis.conf
+```
+
+**Policy choice — `allkeys-lru` (required):**
+
+| Policy | Behavior | Use |
+|---|---|---|
+| `allkeys-lru` | Evict least-recently-used keys across all keys | ✅ Required for this system |
+| `volatile-lru` | Evict LRU only among keys with TTL | ❌ Leaves keys without TTL immune — task IDs can accumulate |
+| `noeviction` | Reject writes when full | ❌ Causes task queue loss and write errors |
+
+`allkeys-lru` is safe here because all critical durable state lives in PostgreSQL — Redis is transport only. LRU eviction of stale task IDs is acceptable; the task router re-publishes OPEN tasks on the next poll.
+
+**Health check:** Expose Redis memory usage in `/health`. Alert when `used_memory` exceeds 80% of `maxmemory`.
+
+---
+
 ## What Redis must NOT store
 
 - Raw SQLAlchemy model instances (use serialized dicts)

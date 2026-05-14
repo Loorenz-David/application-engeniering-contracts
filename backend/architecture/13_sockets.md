@@ -308,6 +308,97 @@ async def _handle_typing(ws: WebSocket, msg: dict) -> None:
 
 ---
 
+## Connection limits
+
+`ConnectionManager` enforces per-user and per-process connection limits. Without limits, a buggy client or browser session leak can exhaust server memory.
+
+Add limit enforcement inside `connect()`:
+
+```python
+# sockets/manager.py
+MAX_CONNECTIONS_PER_PROCESS = 5000   # total WebSocket connections this worker holds
+MAX_CONNECTIONS_PER_USER    = 10     # tabs / devices per authenticated user
+
+
+class ConnectionManager:
+
+    async def connect(self, ws: WebSocket, user_id: str, username: str, workspace_id: str) -> None:
+        if len(self._connections) >= MAX_CONNECTIONS_PER_PROCESS:
+            await ws.close(code=4008, reason="Server connection limit reached.")
+            return
+
+        user_sockets = self._user_connections.get(user_id, [])
+        if len(user_sockets) >= MAX_CONNECTIONS_PER_USER:
+            # Evict the oldest connection for this user before accepting the new one.
+            oldest = user_sockets[0]
+            await oldest.close(code=4009, reason="Connection replaced by newer session.")
+            self.disconnect(oldest)
+
+        await ws.accept()
+        # ... rest of connect logic
+```
+
+**Rules:**
+- `MAX_CONNECTIONS_PER_PROCESS` is read from `settings.ws_max_connections_per_process` so it can be tuned via env var without a code deploy.
+- Do not reject the new connection when the per-user limit is hit — evict the oldest instead. Rejecting causes the client to loop reconnecting. Evicting lets the newest session win, which is almost always what the user wants.
+- Log evictions at `INFO` level: `ws:evict user=%s connections_before=%d`.
+
+---
+
+## Idle disconnect / keepalive
+
+Long-lived WebSocket connections that go idle (browser tab in background, network hiccup) consume memory indefinitely. Implement server-side ping and close idle connections that do not respond.
+
+The server sends a `ping` event every 30 seconds. The client must respond with a `pong` message within 10 seconds. If no `pong` is received, the connection is closed.
+
+```python
+# sockets/handlers.py — inside the websocket_endpoint receive loop
+
+PING_INTERVAL_SECONDS = 30
+PONG_TIMEOUT_SECONDS  = 10
+
+
+@router.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket, token: str = Query(...)):
+    # ... auth and connect ...
+
+    last_pong = asyncio.get_event_loop().time()
+
+    async def keepalive():
+        nonlocal last_pong
+        while True:
+            await asyncio.sleep(PING_INTERVAL_SECONDS)
+            await websocket.send_json({"event": "ping"})
+            await asyncio.sleep(PONG_TIMEOUT_SECONDS)
+            if asyncio.get_event_loop().time() - last_pong > PING_INTERVAL_SECONDS + PONG_TIMEOUT_SECONDS:
+                await websocket.close(code=4010, reason="Keepalive timeout.")
+                return
+
+    keepalive_task = asyncio.create_task(keepalive())
+    try:
+        while True:
+            raw = await websocket.receive_text()
+            msg = json.loads(raw)
+            if msg.get("action") == "pong":
+                last_pong = asyncio.get_event_loop().time()
+            else:
+                await _handle_client_message(websocket, raw)
+    except WebSocketDisconnect:
+        _cleanup_presence(websocket)
+        manager.disconnect(websocket)
+    finally:
+        keepalive_task.cancel()
+```
+
+**Client-side contract:** The frontend must handle `ping` events and respond with `{"action": "pong"}` within `PONG_TIMEOUT_SECONDS`. Failure to respond closes the connection with code `4010`.
+
+**Rules:**
+- `PING_INTERVAL_SECONDS` and `PONG_TIMEOUT_SECONDS` come from settings — never hardcoded.
+- The keepalive task is always cancelled in the `finally` block to prevent task leaks.
+- Idle connections closed by the server must be reconnected by the client automatically. The client's reconnect logic should use exponential backoff to avoid a stampede of reconnects after a server restart.
+
+---
+
 ## Redis pub/sub listener (cross-process push)
 
 The lifespan starts a background task that subscribes to the `channel:sockets` Redis channel and routes incoming messages to the local `ConnectionManager`:

@@ -24,6 +24,7 @@ SOURCE_ARCHITECTURE_DIR = SOURCE_TASK_SYSTEM_DIR.parent / "architecture"
 SOURCE_GUIDE_PATH = SOURCE_TASK_SYSTEM_DIR / "backend_contract_goal_mapping_guide.md"
 SOURCE_DOCS_DIR = SOURCE_BACKEND_DIR / "docs"
 SOURCE_SKILLS_DIR = SOURCE_BACKEND_DIR / "skills"
+SOURCE_TESTS_DIR = SOURCE_BACKEND_DIR / "tests"
 
 CORE_CONTRACT_FILES: list[str] = [
     "01_architecture.md",
@@ -56,6 +57,8 @@ _DOMAIN_STUBS: dict[str, tuple[str, str]] = {
 REQUIRED_DOCS_FILES: list[str] = [
     "README.md",
     "architecture/under_construction/TEMPLATE_PLAN.md",
+    "architecture/under_construction/implementation/TEMPLATE_PLAN.md",
+    "architecture/under_construction/intention/TEMPLATE_INTENTION_PLAN.md",
     "architecture/implemented_summaries/TEMPLATE_SUMMARY.md",
     "architecture/archives/TEMPLATE_ARCHIVE_RECORD.md",
     "debugging/TEMPLATE_DEBUG_PLAN.md",
@@ -71,7 +74,16 @@ REQUIRED_SKILLS_FILES: list[str] = [
     "_shared/quality_gate.md",
     "_shared/plan_lifecycle_contract.md",
     "cross_cutting/plan_lifecycle_orchestrator/SKILL.md",
+    "cross_cutting/intention_planning/SKILL.md",
     "cross_cutting/debugging_nested_plan_loop/SKILL.md",
+]
+
+REQUIRED_TESTS_FILES: list[str] = [
+    "README.md",
+    "bootstrap_tests/run_all.sh",
+    "bootstrap_tests/01_seed_identity.sh",
+    "bootstrap_tests/07_execution_layer.py",
+    "bootstrap_tests/11_sleep_mode.py",
 ]
 
 
@@ -132,6 +144,38 @@ def _sync_docs(docs_dir: Path, *, dry_run: bool = False, action_log: list[str] |
     return synced
 
 
+def _sync_tests(tests_dir: Path, *, dry_run: bool = False, action_log: list[str] | None = None) -> int:
+    """Sync canonical bootstrap test suite to local backend/tests/."""
+    if not SOURCE_TESTS_DIR.exists():
+        typer.echo(f"  ⚠ Canonical tests not found at {SOURCE_TESTS_DIR} — skipping")
+        return 0
+    synced = 0
+    for source_path in sorted(SOURCE_TESTS_DIR.rglob("*")):
+        if not source_path.is_file():
+            continue
+        # Skip pycache and credentials files.
+        if "__pycache__" in source_path.parts:
+            continue
+        if source_path.name in {".env.s3"}:
+            continue
+        rel = source_path.relative_to(SOURCE_TESTS_DIR)
+        target_path = tests_dir / rel
+        _copy_file(source_path, target_path, dry_run=dry_run, action_log=action_log)
+        synced += 1
+
+    # Ensure test_summary directory exists (runtime writes go here).
+    summary_dir = tests_dir / "test_summary"
+    if dry_run:
+        typer.echo(f"  [dry-run] Would ensure test_summary dir: {summary_dir}")
+    else:
+        summary_dir.mkdir(parents=True, exist_ok=True)
+        if action_log is not None:
+            action_log.append(str(summary_dir))
+
+    typer.echo(f"  Synced {synced} test file(s) to {tests_dir}")
+    return synced
+
+
 def _sync_skills(skills_dir: Path, *, dry_run: bool = False, action_log: list[str] | None = None) -> int:
     """Sync canonical skills set to local backend/skills/."""
     synced = 0
@@ -155,10 +199,11 @@ def _sync_skills(skills_dir: Path, *, dry_run: bool = False, action_log: list[st
 
 
 def _validate_sync(backend_dir: Path) -> int:
-    """Validate required synced files exist under backend/docs and backend/skills."""
+    """Validate required synced files exist under backend/docs, backend/skills, and backend/tests."""
     errors: list[str] = []
     docs_dir = backend_dir / "docs"
     skills_dir = backend_dir / "skills"
+    tests_dir = backend_dir / "tests"
 
     for rel in REQUIRED_DOCS_FILES:
         path = docs_dir / rel
@@ -170,13 +215,18 @@ def _validate_sync(backend_dir: Path) -> int:
         if not path.exists():
             errors.append(f"missing skills file: {path}")
 
+    for rel in REQUIRED_TESTS_FILES:
+        path = tests_dir / rel
+        if not path.exists():
+            errors.append(f"missing tests file: {path}")
+
     if errors:
         typer.echo("Validation failed:", err=True)
         for item in errors:
             typer.echo(f"- {item}", err=True)
         return 1
 
-    typer.echo(f"Validation OK: docs/skills sync layout verified under {backend_dir}")
+    typer.echo(f"Validation OK: docs/skills/tests sync layout verified under {backend_dir}")
     return 0
 
 
@@ -209,6 +259,7 @@ def _write_sync_report(
         f"- Contracts synced: `{counts['contracts']}`",
         f"- Docs synced: `{counts['docs']}`",
         f"- Skills synced: `{counts['skills']}`",
+        f"- Tests synced: `{counts['tests']}`",
         f"- Local stubs scaffolded: `{counts['stubs']}`",
         f"- Version files written: `{counts['version_files']}`",
         "",
@@ -352,10 +403,15 @@ def main(
         "--sync-skills",
         help="Sync backend skills system files",
     ),
+    sync_tests: bool = typer.Option(
+        False,
+        "--sync-tests",
+        help="Sync canonical bootstrap test suite into backend/tests/",
+    ),
     sync_all: bool = typer.Option(
         False,
         "--sync-all",
-        help="Run contracts + guide + docs + skills sync in one command",
+        help="Run contracts + guide + docs + skills + tests sync in one command",
     ),
     preserve_local: bool = typer.Option(
         True,
@@ -380,11 +436,13 @@ def main(
     app_dir = backend_dir / "app"
     docs_dir = backend_dir / "docs"
     skills_dir = backend_dir / "skills"
+    tests_dir = backend_dir / "tests"
     action_log: list[str] = []
     counts = {
         "contracts": 0,
         "docs": 0,
         "skills": 0,
+        "tests": 0,
         "stubs": 0,
         "version_files": 0,
     }
@@ -395,6 +453,7 @@ def main(
             (sync_guide, "--sync-guide"),
             (sync_docs, "--sync-docs"),
             (sync_skills, "--sync-skills"),
+            (sync_tests, "--sync-tests"),
             (sync_all, "--sync-all"),
             (preserve_local, "--preserve-local"),
             (force, "--force"),
@@ -471,6 +530,7 @@ def main(
         sync_guide = True
         sync_docs = True
         sync_skills = True
+        sync_tests = True
         if "--sync-all" not in selected_flags:
             selected_flags.append("--sync-all")
 
@@ -494,6 +554,9 @@ def main(
 
     if sync_skills:
         counts["skills"] = _sync_skills(skills_dir, dry_run=dry_run, action_log=action_log)
+
+    if sync_tests:
+        counts["tests"] = _sync_tests(tests_dir, dry_run=dry_run, action_log=action_log)
 
     validation_status = "not_run"
     if validate:

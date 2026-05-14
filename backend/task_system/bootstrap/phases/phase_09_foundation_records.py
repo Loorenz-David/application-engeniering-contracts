@@ -47,6 +47,7 @@ class PendingUpload(IdentityMixin, Base):
     )
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     size_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    upload_id: Mapped[str | None] = mapped_column(String(256), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
 
     workspace: Mapped["Workspace"] = relationship("Workspace", foreign_keys=[workspace_id])
@@ -70,6 +71,22 @@ class StorageClient(ABC):
 
     @abstractmethod
     def delete_object(self, key: str) -> None: ...
+
+    @abstractmethod
+    def initiate_multipart_upload(self, key: str, content_type: str) -> str:
+        \"\"\"Returns upload_id.\"\"\"
+
+    @abstractmethod
+    def generate_part_presigned_url(self, key: str, upload_id: str, part_number: int, expires_in: int) -> str:
+        \"\"\"Returns presigned PUT URL for one part. part_number is 1-indexed.\"\"\"
+
+    @abstractmethod
+    def complete_multipart_upload(self, key: str, upload_id: str, parts: list[dict]) -> None:
+        \"\"\"parts: [{\"PartNumber\": 1, \"ETag\": \"...\"}]\"\"\"
+
+    @abstractmethod
+    def abort_multipart_upload(self, key: str, upload_id: str) -> None:
+        \"\"\"Called on timeout or orphan cleanup.\"\"\"
 """, force=force)
     _write(root / a / "services" / "infra" / "storage" / "local_client.py", f"""\
 from pathlib import Path
@@ -96,12 +113,24 @@ class LocalStorageClient(StorageClient):
         path = self._path(key)
         if not path.exists():
             return None
-        return {{"content_length": path.stat().st_size, "content_type": "application/octet-stream"}}
+        return {{"content_length": path.stat().st_size, "content_type": None}}
 
     def delete_object(self, key: str) -> None:
         path = self._path(key)
         if path.exists():
             path.unlink()
+
+    def initiate_multipart_upload(self, key: str, content_type: str) -> str:
+        return f"local-upload-{{key}}"
+
+    def generate_part_presigned_url(self, key: str, upload_id: str, part_number: int, expires_in: int) -> str:
+        return f"{{self._host}}/dev/storage/multipart/{{key}}/part/{{part_number}}"
+
+    def complete_multipart_upload(self, key: str, upload_id: str, parts: list[dict]) -> None:
+        pass  # no-op for local dev
+
+    def abort_multipart_upload(self, key: str, upload_id: str) -> None:
+        pass  # no-op for local dev
 """, force=force)
     _write(root / a / "services" / "infra" / "storage" / "s3_client.py", f"""\
 from {a}.services.infra.storage.base import StorageClient
@@ -157,6 +186,37 @@ class S3Client(StorageClient):
 
     def delete_object(self, key: str) -> None:
         self._client.delete_object(Bucket=self._bucket, Key=key)
+
+    def initiate_multipart_upload(self, key: str, content_type: str) -> str:
+        resp = self._client.create_multipart_upload(
+            Bucket=self._bucket, Key=key, ContentType=content_type
+        )
+        return resp["UploadId"]
+
+    def generate_part_presigned_url(self, key: str, upload_id: str, part_number: int, expires_in: int) -> str:
+        return self._client.generate_presigned_url(
+            "upload_part",
+            Params={{
+                "Bucket": self._bucket,
+                "Key": key,
+                "UploadId": upload_id,
+                "PartNumber": part_number,
+            }},
+            ExpiresIn=expires_in,
+        )
+
+    def complete_multipart_upload(self, key: str, upload_id: str, parts: list[dict]) -> None:
+        self._client.complete_multipart_upload(
+            Bucket=self._bucket,
+            Key=key,
+            UploadId=upload_id,
+            MultipartUpload={{"Parts": parts}},
+        )
+
+    def abort_multipart_upload(self, key: str, upload_id: str) -> None:
+        self._client.abort_multipart_upload(
+            Bucket=self._bucket, Key=key, UploadId=upload_id
+        )
 """, force=force)
     _write(root / a / "services" / "infra" / "storage" / "__init__.py", f"""\
 from {a}.config import settings
@@ -168,19 +228,25 @@ from {a}.services.infra.storage.s3_client import S3Client
 def get_storage_client() -> StorageClient:
     provider = settings.storage_provider
     if provider == "s3":
+        if not settings.storage_bucket:
+            raise RuntimeError("STORAGE_BUCKET must be set when STORAGE_PROVIDER=s3")
+        region = settings.storage_region or "us-east-1"
         return S3Client(
-            bucket=settings.storage_bucket or "",
-            region=settings.storage_region or "us-east-1",
+            bucket=settings.storage_bucket,
+            region=region,
             access_key=settings.aws_access_key_id,
             secret_key=settings.aws_secret_access_key,
+            endpoint_url=settings.storage_endpoint_url or f"https://s3.{{region}}.amazonaws.com",
         )
     if provider == "localstack":
+        if not settings.storage_bucket:
+            raise RuntimeError("STORAGE_BUCKET must be set when STORAGE_PROVIDER=localstack")
         return S3Client(
-            bucket=settings.storage_bucket or "",
+            bucket=settings.storage_bucket,
             region=settings.storage_region or "us-east-1",
             endpoint_url=settings.storage_endpoint_url or "http://localhost:4566",
         )
-    return LocalStorageClient(base_path=settings.local_storage_path)
+    return LocalStorageClient(base_path=settings.local_storage_path, host=settings.local_storage_host)
 """, force=force)
 
     _touch(root / a / "services" / "commands" / "files" / "__init__.py", force=force)
@@ -198,9 +264,14 @@ from {a}.services.infra.storage import get_storage_client
 
 ALLOWED_MIME_TYPES = {{
     "record_attachment": ["image/jpeg", "image/png", "image/webp", "application/pdf", "text/plain"],
+    "case_attachment":   ["image/jpeg", "image/png", "image/webp", "application/pdf", "text/plain"],
     "import": ["text/csv", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"],
 }}
-MAX_FILE_SIZE_BYTES = {{"record_attachment": 10 * 1024 * 1024, "import": 50 * 1024 * 1024}}
+MAX_FILE_SIZE_BYTES = {{
+    "record_attachment": 10 * 1024 * 1024,
+    "case_attachment":   10 * 1024 * 1024,
+    "import":            50 * 1024 * 1024,
+}}
 _PRESIGN_TTL = 300
 
 
@@ -344,13 +415,13 @@ async def pending_upload_download_url(body: PendingUploadDownloadBody, claims: d
 """, force=force)
     replace_once(
         root / a / "routers" / "api_v1" / "__init__.py",
-        f"from {a}.routers.api_v1 import auth, health, notifications\n",
-        f"from {a}.routers.api_v1 import auth, files, health, notifications\n",
+        f"from {a}.routers.api_v1 import audit, auth, health, notifications\n",
+        f"from {a}.routers.api_v1 import audit, auth, files, health, notifications\n",
     )
     replace_once(
         root / a / "routers" / "api_v1" / "__init__.py",
-        f"from {a}.routers.api_v1 import auth, health\n",
-        f"from {a}.routers.api_v1 import auth, files, health\n",
+        f"from {a}.routers.api_v1 import audit, auth, health\n",
+        f"from {a}.routers.api_v1 import audit, auth, files, health\n",
     )
     replace_once(
         root / a / "routers" / "api_v1" / "__init__.py",
@@ -2098,7 +2169,7 @@ async def dev_storage_get(key: str) -> FileResponse:
         root / a / "__init__.py",
         "    _register_routers(app)\n",
         f"    _register_routers(app)\n"
-        f"    if settings.environment == 'development':\n"
+        f"    if settings.storage_provider == 'local':\n"
         f"        from {a}.routers.dev.storage import router as _dev_storage_router\n"
         f"        app.include_router(_dev_storage_router)\n",
     )
@@ -2198,14 +2269,20 @@ async def create_case_route(body: CreateCaseBody, claims: dict = Depends(get_jwt
     return await _run(create_case, body.model_dump(), claims, session)
 
 
-@router.get("/{{case_client_id}}")
-async def get_case_route(case_client_id: str, claims: dict = Depends(get_jwt_claims), session: AsyncSession = Depends(get_db)):
-    return await _run(get_case, {{"case_client_id": case_client_id}}, claims, session)
-
-
 @router.get("")
 async def list_cases_route(state: str | None = None, created_by_id: str | None = None, entity_type: str | None = None, entity_client_id: str | None = None, offset: int = 0, limit: int = 50, claims: dict = Depends(get_jwt_claims), session: AsyncSession = Depends(get_db)):
     return await _run(list_cases, {{"state": state, "created_by_id": created_by_id, "entity_type": entity_type, "entity_client_id": entity_client_id, "offset": offset, "limit": limit}}, claims, session)
+
+
+@router.get("/unread-counts")
+async def unread_counts_route(conversation_client_ids: str | None = None, claims: dict = Depends(get_jwt_claims), session: AsyncSession = Depends(get_db)):
+    ids = conversation_client_ids.split(",") if conversation_client_ids else None
+    return await _run(get_unread_counts, {{"conversation_client_ids": ids}}, claims, session)
+
+
+@router.get("/{{case_client_id}}")
+async def get_case_route(case_client_id: str, claims: dict = Depends(get_jwt_claims), session: AsyncSession = Depends(get_db)):
+    return await _run(get_case, {{"case_client_id": case_client_id}}, claims, session)
 
 
 @router.patch("/{{case_client_id}}")
@@ -2281,12 +2358,6 @@ async def soft_delete_message_route(message_client_id: str, claims: dict = Depen
 @router.post("/messages/mark-read")
 async def mark_read_route(body: MarkReadBody, claims: dict = Depends(get_jwt_claims), session: AsyncSession = Depends(get_db)):
     return await _run(mark_read, body.model_dump(), claims, session)
-
-
-@router.get("/unread-counts")
-async def unread_counts_route(conversation_client_ids: str | None = None, claims: dict = Depends(get_jwt_claims), session: AsyncSession = Depends(get_db)):
-    ids = conversation_client_ids.split(",") if conversation_client_ids else None
-    return await _run(get_unread_counts, {{"conversation_client_ids": ids}}, claims, session)
 """, force=force)
 
     _write(root / a / "routers" / "api_v1" / "images.py", f"""\
@@ -2360,21 +2431,6 @@ async def image_confirm_upload_route(body: ConfirmImageUploadBody, claims: dict 
     return await _run(confirm_upload, body.model_dump(), claims, session)
 
 
-@router.get("/{{image_client_id}}")
-async def get_image_route(image_client_id: str, claims: dict = Depends(get_jwt_claims), session: AsyncSession = Depends(get_db)):
-    return await _run(get_image, {{"image_client_id": image_client_id}}, claims, session)
-
-
-@router.get("/{{image_client_id}}/download-url")
-async def image_download_url_route(image_client_id: str, claims: dict = Depends(get_jwt_claims), session: AsyncSession = Depends(get_db)):
-    return await _run(get_download_url, {{"image_client_id": image_client_id}}, claims, session)
-
-
-@router.delete("/{{image_client_id}}")
-async def soft_delete_image_route(image_client_id: str, claims: dict = Depends(get_jwt_claims), session: AsyncSession = Depends(get_db)):
-    return await _run(soft_delete_image, {{"image_client_id": image_client_id}}, claims, session)
-
-
 @router.get("")
 async def list_images_route(entity_type: str, entity_client_id: str, claims: dict = Depends(get_jwt_claims), session: AsyncSession = Depends(get_db)):
     return await _run(list_images_for_entity, {{"entity_type": entity_type, "entity_client_id": entity_client_id}}, claims, session)
@@ -2390,6 +2446,21 @@ async def reorder_links_route(body: ReorderLinksBody, claims: dict = Depends(get
     return await _run(reorder_links, body.model_dump(), claims, session)
 
 
+@router.get("/{{image_client_id}}")
+async def get_image_route(image_client_id: str, claims: dict = Depends(get_jwt_claims), session: AsyncSession = Depends(get_db)):
+    return await _run(get_image, {{"image_client_id": image_client_id}}, claims, session)
+
+
+@router.get("/{{image_client_id}}/download-url")
+async def image_download_url_route(image_client_id: str, claims: dict = Depends(get_jwt_claims), session: AsyncSession = Depends(get_db)):
+    return await _run(get_download_url, {{"image_client_id": image_client_id}}, claims, session)
+
+
+@router.delete("/{{image_client_id}}")
+async def soft_delete_image_route(image_client_id: str, claims: dict = Depends(get_jwt_claims), session: AsyncSession = Depends(get_db)):
+    return await _run(soft_delete_image, {{"image_client_id": image_client_id}}, claims, session)
+
+
 @router.post("/{{image_client_id}}/annotations")
 async def create_annotation_route(image_client_id: str, body: CreateAnnotationBody, claims: dict = Depends(get_jwt_claims), session: AsyncSession = Depends(get_db)):
     return await _run(create_annotation, {{**body.model_dump(), "image_client_id": image_client_id}}, claims, session)
@@ -2397,13 +2468,13 @@ async def create_annotation_route(image_client_id: str, body: CreateAnnotationBo
 
     replace_once(
         root / a / "routers" / "api_v1" / "__init__.py",
-        f"from {a}.routers.api_v1 import auth, files, health, notifications\n",
-        f"from {a}.routers.api_v1 import auth, cases, files, health, images, notifications\n",
+        f"from {a}.routers.api_v1 import audit, auth, files, health, notifications\n",
+        f"from {a}.routers.api_v1 import audit, auth, cases, files, health, images, notifications\n",
     )
     replace_once(
         root / a / "routers" / "api_v1" / "__init__.py",
-        f"from {a}.routers.api_v1 import auth, files, health\n",
-        f"from {a}.routers.api_v1 import auth, cases, files, health, images\n",
+        f"from {a}.routers.api_v1 import audit, auth, files, health\n",
+        f"from {a}.routers.api_v1 import audit, auth, cases, files, health, images\n",
     )
     replace_once(
         root / a / "routers" / "api_v1" / "__init__.py",

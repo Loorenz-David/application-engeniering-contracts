@@ -155,34 +155,101 @@ def delete_workspace_member(ctx: ServiceContext) -> dict:
 
 ## Event naming convention
 
-Audit events follow the same `<domain>.<verb>` pattern as domain events:
+Audit event names follow the same `<domain>:<verb>` convention as domain events (see [11_infra_events.md](11_infra_events.md)):
 
 ```
-<domain>.<entity>.<action>
+<domain>:<verb>
 ```
 
 Examples:
 ```
-workspace.member.invited
-workspace.member.removed
-workspace.settings.updated
-user.password.changed
-user.email.changed
-role.permission.granted
-role.permission.revoked
-record.deleted
-record.restored
-record.bulk_deleted
-integration.credentials.updated
-user.erased
-data.export.requested
+auth:signed-in
+auth:signed-out
+auth:password-changed
+workspace:member-invited
+workspace:member-removed
+workspace:role-changed
+case:state-changed
+case:deleted
+case:participant-removed
+message:deleted
+user:erased
+data:export-requested
 ```
 
 **Rules:**
-- Use past-tense verbs (`removed`, `updated`, `deleted`) — the event already happened.
-- Be specific: `workspace.member.removed` not `workspace.updated`.
+- Use a colon separator — not dots. `workspace:member-removed`, not `workspace.member.removed`.
+- Use past-tense or gerund verbs (`signed-in`, `deleted`, `state-changed`) — the event already happened.
+- Be specific: `workspace:member-removed` not `workspace:updated`.
 - Keep the event string under 128 characters.
 - Define new events in `docs/audit/event_catalog.md` before shipping.
+
+---
+
+## Audited event registry
+
+Which events are audited is controlled by a central registry, not hardcoded inside the handler. This keeps policy out of handler internals and makes expansion cheap.
+
+```python
+# services/infra/audit/audited_events.py
+
+# Base defaults — high-risk actions audited by every generated app.
+_BASE_AUDITED_EVENTS: frozenset[str] = frozenset({
+    "auth:signed-in", "auth:signed-out", "auth:password-changed",
+    "workspace:member-invited", "workspace:member-removed", "workspace:role-changed",
+    "case:state-changed", "case:deleted", "case:participant-removed",
+    "message:deleted",
+})
+
+_EXTENSIONS: set[str] = set()
+
+
+def register_audited_events(events: set[str] | list[str]) -> None:
+    """Register additional audited events from a domain module.
+    Call during application startup before the first request.
+    """
+    _EXTENSIONS.update(events)
+
+
+def get_audited_events() -> frozenset[str]:
+    """Return the merged set: base defaults + registered extensions + AUDITED_EVENTS env override."""
+    combined = set(_BASE_AUDITED_EVENTS) | _EXTENSIONS
+    env_override = os.environ.get("AUDITED_EVENTS", "")
+    if env_override.strip():
+        combined |= {e.strip() for e in env_override.split(",") if e.strip()}
+    return frozenset(combined)
+```
+
+### Adding audited events for a new domain
+
+Add a registration call during application startup — never edit the base registry or the handler:
+
+```python
+# my_app/__init__.py — inside lifespan, after init_db()
+from my_app.services.infra.audit.audited_events import register_audited_events
+
+register_audited_events({
+    "invoice:created",
+    "invoice:deleted",
+    "contract:signed",
+})
+```
+
+### Environment override
+
+Set `AUDITED_EVENTS` to a comma-separated list to add events without a code deploy — useful for temporary compliance requirements:
+
+```
+AUDITED_EVENTS=integration:credentials-updated,data:export-requested
+```
+
+The env override is additive — it never removes base defaults or registered extensions.
+
+### Rules
+
+- **Never put event names directly inside `audit_handler.py`.** The handler calls `get_audited_events()` on every event; policy lives in the registry.
+- **New domains add events via `register_audited_events()` at startup**, not by importing or mutating `_BASE_AUDITED_EVENTS`.
+- **`get_audited_events()` is called per event**, so startup registrations are always reflected without restart.
 
 ---
 

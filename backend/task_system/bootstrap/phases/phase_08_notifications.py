@@ -445,7 +445,7 @@ from {a}.services.infra.presence import get_viewers
 logger = logging.getLogger(__name__)
 
 
-async def handle_create_notifications(payload: dict) -> None:
+async def handle_create_notifications(payload: dict, task_id: str) -> None:
     notification_type = payload["notification_type"]
     user_ids          = list(payload.get("user_ids", []))
     title             = payload["title"]
@@ -523,7 +523,7 @@ from {a}.services.infra.push.vapid import send_web_push
 logger = logging.getLogger(__name__)
 
 
-async def handle_send_push_notification(payload: dict) -> None:
+async def handle_send_push_notification(payload: dict, task_id: str) -> None:
     user_id = payload["user_id"]
 
     async for session in get_db_session():
@@ -778,12 +778,27 @@ async def unpin_route(
     # ── Wire router into api_v1/__init__.py ───────────────────────────────────
     replace_once(
         root / a / "routers" / "api_v1" / "__init__.py",
-        f"from {a}.routers.api_v1 import auth, health\n",
-        f"from {a}.routers.api_v1 import auth, health, notifications\n",
+        f"from {a}.routers.api_v1 import audit, auth, health\n",
+        f"from {a}.routers.api_v1 import audit, auth, health, notifications\n",
     )
     replace_once(
         root / a / "routers" / "api_v1" / "__init__.py",
         '    app.include_router(auth.router, prefix="/api/v1/auth", tags=["auth"])\n',
         '    app.include_router(auth.router, prefix="/api/v1/auth", tags=["auth"])\n'
         '    app.include_router(notifications.router, prefix="/api/v1/notifications", tags=["notifications"])\n',
+    )
+
+    # ── Wire notification-specific task handlers into the notification worker ──
+    replace_once(
+        root / a / "workers" / "notification_worker.py",
+        f"from {a}.services.infra.jobs.handlers.notification import handle_notification\n",
+        f"from {a}.services.infra.jobs.handlers.notification import handle_notification\n"
+        f"from {a}.services.tasks.notifications.create_notifications import handle_create_notifications\n"
+        f"from {a}.services.tasks.notifications.send_push_notification import handle_send_push_notification\n",
+    )
+    replace_once(
+        root / a / "workers" / "notification_worker.py",
+        f"    TaskType.CREATE_NOTIFICATIONS:       handle_notification,\n",
+        f"    TaskType.CREATE_NOTIFICATIONS:       handle_create_notifications,\n"
+        f"    TaskType.SEND_PUSH_NOTIFICATION:     handle_send_push_notification,\n",
     )

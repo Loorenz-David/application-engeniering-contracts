@@ -174,26 +174,37 @@ Use `hmac.compare_digest` for signature comparison — never `==`. Timing-safe c
 
 ## Rate limiting
 
-Rate limiting is applied at the infrastructure level (Nginx, ALB, CloudFront WAF). The application layer adds per-user rate limiting for high-risk endpoints:
+Rate limiting is applied at the infrastructure level (Nginx, ALB, CloudFront WAF). The application layer adds per-user rate limiting for high-risk endpoints.
+
+Use `get_async_redis()` and a Redis pipeline to make INCR + EXPIRE atomic — a crash between two separate calls would leave the counter key without a TTL, causing it to persist forever:
 
 ```python
-from fastapi import Depends
+from fastapi import Depends, HTTPException
 from my_app.config import settings
 from my_app.routers.utils.jwt_dep import get_jwt_claims
-from my_app.services.infra.redis import get_redis_client
-from my_app.errors import PermissionDenied
+from my_app.services.infra.redis.async_client import get_async_redis
 
 
 def rate_limit(max_requests: int, window_seconds: int, key_prefix: str):
+    """Per-user fixed-window rate limiter backed by Redis.
+
+    Uses a pipeline to keep INCR + EXPIRE atomic — a process crash between
+    two separate calls would leave the counter without a TTL.
+    """
     async def _check(claims: dict = Depends(get_jwt_claims)) -> None:
         user_id = claims.get("user_id", "anonymous")
-        redis = get_redis_client(settings.redis_uri)
-        key = f"{settings.redis_key_prefix}:ratelimit:{key_prefix}:{user_id}"
-        count = redis.incr(key)
-        if count == 1:
-            redis.expire(key, window_seconds)
+        redis   = get_async_redis()
+        key     = f"{settings.redis_key_prefix}:ratelimit:{key_prefix}:{user_id}"
+        async with redis.pipeline(transaction=True) as pipe:
+            await pipe.incr(key)
+            await pipe.expire(key, window_seconds)
+            results = await pipe.execute()
+        count = results[0]
         if count > max_requests:
-            raise PermissionDenied("Rate limit exceeded. Please wait before retrying.")
+            raise HTTPException(
+                status_code=429,
+                detail="Rate limit exceeded. Please wait before retrying.",
+            )
 
     return _check
 ```
@@ -207,6 +218,12 @@ async def login(
 ):
     ...
 ```
+
+**Rules:**
+- Always return HTTP 429 (not 403) for rate limit exceeded — 403 signals a permission error, not a capacity error.
+- Infrastructure-level rate limiting (Nginx/WAF) is the primary defence; application-level is a per-user backstop for endpoints that would otherwise be cheap to abuse.
+- The `window_seconds` counter resets when the key expires — this is a fixed-window limiter, not a sliding window. For endpoints where burst timing matters (e.g., login), use a shorter window (60s) with a conservative limit (10 requests).
+- Never apply `rate_limit` to health check or internal webhook endpoints — they must not return 429.
 
 ---
 

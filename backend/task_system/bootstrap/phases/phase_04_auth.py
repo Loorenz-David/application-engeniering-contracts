@@ -140,8 +140,16 @@ class WorkspaceMembership(IdentityMixin, Base):
 """, force=force)
 
     _touch(root / a / "routers" / "utils" / "__init__.py", force=force)
+    _write(root / a / "routers" / "utils" / "roles.py", """\
+ADMIN  = "admin"
+MEMBER = "member"
+FIELD  = "field"
+""", force=force)
     _write(root / a / "routers" / "utils" / "jwt_dep.py", f"""\
+import threading
+
 import jwt
+from cachetools import TTLCache
 from fastapi import Depends, HTTPException
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
@@ -149,11 +157,19 @@ from {a}.config import settings
 
 _bearer = HTTPBearer()
 
+_claim_cache: TTLCache = TTLCache(maxsize=2000, ttl=60)
+_cache_lock = threading.Lock()
+
 
 async def get_jwt_claims(
     credentials: HTTPAuthorizationCredentials = Depends(_bearer),
 ) -> dict:
     token = credentials.credentials
+
+    with _cache_lock:
+        if token in _claim_cache:
+            return _claim_cache[token]
+
     try:
         claims = jwt.decode(token, settings.jwt_secret_key, algorithms=["HS256"])
     except jwt.PyJWTError:
@@ -162,6 +178,9 @@ async def get_jwt_claims(
     jti = claims.get("jti")
     if jti and await _is_blocklisted(jti):
         raise HTTPException(status_code=401, detail="Token has been revoked.")
+
+    with _cache_lock:
+        _claim_cache[token] = claims
 
     return claims
 
@@ -190,11 +209,50 @@ def require_app_scope(required_scope: str | list[str]):
 
 async def _is_blocklisted(jti: str) -> bool:
     try:
-        from {a}.services.infra.redis import get_redis_client
-        r = get_redis_client(settings.redis_url)
-        return r.exists(f"{{settings.redis_key_prefix}}:auth:blocklist:{{jti}}") == 1
+        from {a}.services.infra.redis.async_client import get_async_redis
+        redis = get_async_redis()
+        return await redis.exists(f"{{settings.redis_key_prefix}}:auth:blocklist:{{jti}}") == 1
     except Exception as exc:
         raise HTTPException(status_code=401, detail="Auth blocklist unavailable.") from exc
+""", force=force)
+
+    _write(root / a / "routers" / "utils" / "rate_limit.py", f"""\
+from fastapi import Depends, HTTPException, Request
+
+from {a}.config import settings
+from {a}.routers.utils.jwt_dep import get_jwt_claims
+from {a}.services.infra.redis.async_client import get_async_redis
+
+
+async def _apply_rate_limit(key: str, max_requests: int, window_seconds: int) -> None:
+    if settings.environment in ("development", "testing"):
+        return
+    redis = get_async_redis()
+    async with redis.pipeline(transaction=True) as pipe:
+        await pipe.incr(key)
+        await pipe.expire(key, window_seconds)
+        results = await pipe.execute()
+    if results[0] > max_requests:
+        raise HTTPException(status_code=429, detail="Rate limit exceeded. Please wait before retrying.")
+
+
+def rate_limit(max_requests: int, window_seconds: int, key_prefix: str):
+    \"\"\"Rate limit for authenticated endpoints — keys by user_id from JWT.\"\"\"
+    async def _check(claims: dict = Depends(get_jwt_claims)) -> None:
+        user_id = claims.get("user_id", "anonymous")
+        key = f"{{settings.redis_key_prefix}}:ratelimit:{{key_prefix}}:{{user_id}}"
+        await _apply_rate_limit(key, max_requests, window_seconds)
+    return _check
+
+
+def ip_rate_limit(max_requests: int, window_seconds: int, key_prefix: str):
+    \"\"\"Rate limit for unauthenticated endpoints — keys by client IP.\"\"\"
+    async def _check(request: Request) -> None:
+        forwarded = request.headers.get("X-Forwarded-For")
+        ip = forwarded.split(",")[0].strip() if forwarded else (request.client.host if request.client else "unknown")
+        key = f"{{settings.redis_key_prefix}}:ratelimit:{{key_prefix}}:{{ip}}"
+        await _apply_rate_limit(key, max_requests, window_seconds)
+    return _check
 """, force=force)
 
     _touch(root / a / "routers" / "middleware" / "__init__.py", force=force)
@@ -225,6 +283,9 @@ class BackendPermissionMiddleware(BaseHTTPMiddleware):
                 algorithms=["HS256"],
             )
         except jwt.PyJWTError:
+            return await call_next(request)
+
+        if claims.get("app_scope") == "admin":
             return await call_next(request)
 
         allowed = set(claims.get("backend_permissions", []))
@@ -341,7 +402,7 @@ from {a}.services.context import ServiceContext
 
 
 async def logout_user(ctx: ServiceContext) -> dict:
-    _blocklist_token(ctx.identity)
+    await _blocklist_token(ctx.identity)
     raw_refresh = ctx.incoming_data.get("refresh_token")
     if raw_refresh:
         try:
@@ -351,21 +412,20 @@ async def logout_user(ctx: ServiceContext) -> dict:
                 algorithms=["HS256"],
                 options={{"verify_exp": False}},
             )
-            _blocklist_token(refresh_claims)
+            await _blocklist_token(refresh_claims)
         except Exception:
             pass
     return {{"logged_out": True}}
 
 
-def _blocklist_token(claims: dict) -> None:
+async def _blocklist_token(claims: dict) -> None:
     jti = claims.get("jti")
     exp = claims.get("exp")
     if not jti or not exp:
         return
-    from {a}.services.infra.redis import get_redis_client
+    from {a}.services.infra.redis.async_client import get_async_redis
     ttl = max(int(exp - time.time()) + 60, 1)
-    r = get_redis_client(settings.redis_url)
-    r.set(f"{{settings.redis_key_prefix}}:auth:blocklist:{{jti}}", "1", ex=ttl)
+    await get_async_redis().set(f"{{settings.redis_key_prefix}}:auth:blocklist:{{jti}}", "1", ex=ttl)
 """, force=force)
     _write(root / a / "services" / "commands" / "auth" / "refresh_token.py", f"""\
 from datetime import datetime, timedelta, timezone
@@ -406,6 +466,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from {a}.models.database import get_db
 from {a}.routers.http.response import build_err, build_ok
 from {a}.routers.utils.jwt_dep import get_jwt_claims
+from {a}.routers.utils.rate_limit import ip_rate_limit
 from {a}.services.commands.auth.logout_user import logout_user
 from {a}.services.commands.auth.refresh_token import refresh_token
 from {a}.services.commands.auth.sign_in_user import sign_in_user
@@ -424,7 +485,12 @@ class SignInBody(BaseModel):
 
 
 @router.post("/sign-in")
-async def sign_in_route(body: SignInBody, response: Response, session: AsyncSession = Depends(get_db)):
+async def sign_in_route(
+    body: SignInBody,
+    response: Response,
+    session: AsyncSession = Depends(get_db),
+    _rate: None = Depends(ip_rate_limit(10, 60, "sign-in")),
+):
     outcome = await run_service(sign_in_user, ServiceContext(identity={{}}, incoming_data=body.model_dump(), session=session))
     if not outcome.success:
         return build_err(outcome.error)

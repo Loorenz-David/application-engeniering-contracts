@@ -252,3 +252,81 @@ See [46_serialization.md](46_serialization.md) for the full serialization contra
 - Serializers use `isoformat()` for all datetime fields. Never return a raw `datetime` object.
 - Never introduce internal DB `id` fields in public API responses. Use `client_id`.
 - Never return a raw ORM instance from a query. Always serialize before returning.
+
+---
+
+## Query result caching
+
+Cache query results that are expensive to compute and stable over a known window. The cache lives in Redis; invalidation is triggered by the command that modifies the data.
+
+```python
+# services/infra/cache/query_cache.py
+import json
+from my_app.services.infra.redis.async_client import get_async_redis
+
+_DEFAULT_TTL = 300   # 5 minutes
+
+
+async def get_cached(cache_key: str) -> dict | None:
+    raw = await get_async_redis().get(cache_key)
+    return json.loads(raw) if raw else None
+
+
+async def set_cached(cache_key: str, data: dict, ttl: int = _DEFAULT_TTL) -> None:
+    await get_async_redis().set(cache_key, json.dumps(data), ex=ttl)
+
+
+async def invalidate(cache_key: str) -> None:
+    await get_async_redis().delete(cache_key)
+
+
+async def invalidate_prefix(pattern: str) -> None:
+    redis = get_async_redis()
+    keys  = await redis.keys(pattern)
+    if keys:
+        await redis.delete(*keys)
+```
+
+**Usage in a query:**
+
+```python
+# services/queries/workspace/get_workspace_settings.py
+from my_app.services.infra.cache.query_cache import get_cached, set_cached
+from my_app.config import settings
+
+
+async def get_workspace_settings(ctx: ServiceContext) -> dict:
+    cache_key = f"{settings.redis_key_prefix}:cache:workspace_settings:{ctx.workspace_id}"
+
+    cached = await get_cached(cache_key)
+    if cached is not None:
+        return cached
+
+    # ... DB query ...
+    result = {"settings": serialize_workspace_settings(ws)}
+    await set_cached(cache_key, result, ttl=300)
+    return result
+```
+
+**Invalidation in the command that writes:**
+
+```python
+# services/commands/workspace/update_workspace_settings.py
+from my_app.services.infra.cache.query_cache import invalidate
+from my_app.config import settings
+
+
+async def update_workspace_settings(ctx: ServiceContext) -> dict:
+    # ... write to DB ...
+    cache_key = f"{settings.redis_key_prefix}:cache:workspace_settings:{ctx.workspace_id}"
+    await invalidate(cache_key)
+    return result
+```
+
+**Rules:**
+- Cache keys must include `workspace_id`. Never cache data that crosses workspace boundaries.
+- Every cached query must have a matching `invalidate()` call in every command that can change the cached data.
+- Cacheable queries: workspace settings, role/permission configs, static lookup lists. Not cacheable: user-specific feeds, notification lists, anything that must be consistent in real time.
+- TTL is a safety net, not the primary invalidation mechanism. Always invalidate explicitly on write — do not rely solely on TTL expiry.
+- `invalidate_prefix(pattern)` uses Redis `KEYS` — safe only for low-frequency operations (admin actions, not hot paths). For hot paths, use exact key invalidation.
+- Never cache across workspace boundaries. The cache key must always contain `workspace_id` as a segment.

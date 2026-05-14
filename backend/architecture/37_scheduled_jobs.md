@@ -193,99 +193,154 @@ Both runners are background processes that poll the database and create `executi
 
 ```python
 # services/infra/schedulers/delayed_scheduler_runner.py
+import asyncio
 import logging
-import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
-from my_app import create_app
-from my_app.models import db
+from sqlalchemy import select, func
+
+from my_app.config import settings
+from my_app.domain.execution.enums import EventTaskOriginSourceEnum, TaskType
+from my_app.domain.schedulers.enums import DelayedSchedulerTypeEnum, SchedulerStateEnum
+from my_app.models.database import get_db_session
 from my_app.models.tables.schedulers.delayed_scheduler import DelayedScheduler
-from my_app.models.tables.schedulers.enums import SchedulerStateEnum, DelayedSchedulerTypeEnum
-from my_app.domain.execution.enums import TaskType, EventTaskOriginSourceEnum
 from my_app.services.infra.execution.task_factory import create_execution_task
+from my_app.services.infra.sleep.activity_tracker import ActivityTracker
 
 logger = logging.getLogger(__name__)
 
-POLL_INTERVAL_SECONDS = 10
+POLL_INTERVAL_SECONDS      = 10
+SCHEDULER_SLEEP_CAP_SECONDS = 300   # max sleep between checks even when no jobs are due
+ERROR_RETRY_MINUTES         = 15    # how long before an ERROR-state scheduler is retried
 
 DELAYED_TYPE_TO_TASK_TYPE: dict[DelayedSchedulerTypeEnum, TaskType] = {
-    DelayedSchedulerTypeEnum.NOTIFY_TO_CUSTOMER:  TaskType.DELAYED_NOTIFY_TO_CUSTOMER,
-    DelayedSchedulerTypeEnum.SEND_REPORT:         TaskType.DELAYED_SEND_REPORT,
-    DelayedSchedulerTypeEnum.REMINDER:            TaskType.DELAYED_REMINDER,
-    DelayedSchedulerTypeEnum.BATCH_NOTIFICATION:  TaskType.DELAYED_BATCH_NOTIFICATION,
+    DelayedSchedulerTypeEnum.NOTIFY_TO_CUSTOMER: TaskType.DELAYED_NOTIFY_TO_CUSTOMER,
+    DelayedSchedulerTypeEnum.SEND_REPORT:        TaskType.DELAYED_SEND_REPORT,
+    DelayedSchedulerTypeEnum.REMINDER:           TaskType.DELAYED_REMINDER,
+    DelayedSchedulerTypeEnum.BATCH_NOTIFICATION: TaskType.DELAYED_BATCH_NOTIFICATION,
 }
 
 
-def run_delayed_scheduler_runner() -> None:
-    app = create_app("production")
+async def run_delayed_scheduler_runner() -> None:
     logger.info("Delayed scheduler runner started.")
+    next_due_at: datetime | None = None
 
-    with app.app_context():
-        while True:
-            _fire_due_schedulers()
-            time.sleep(POLL_INTERVAL_SECONDS)
+    while True:
+        if ActivityTracker.is_sleeping():
+            if next_due_at is not None:
+                sleep_for = max(0.0, (next_due_at - datetime.now(timezone.utc)).total_seconds())
+                sleep_for = min(sleep_for, SCHEDULER_SLEEP_CAP_SECONDS)
+            else:
+                sleep_for = SCHEDULER_SLEEP_CAP_SECONDS
+            await asyncio.sleep(sleep_for)
+            if next_due_at is None or datetime.now(timezone.utc) < next_due_at:
+                continue
+            ActivityTracker.touch()
 
-
-def _fire_due_schedulers() -> None:
-    now = datetime.now(timezone.utc)
-
-    due = (
-        db.session.query(DelayedScheduler)
-        .filter(
-            DelayedScheduler.state == SchedulerStateEnum.ACTIVE,
-            DelayedScheduler.scheduled_for <= now,
-        )
-        .limit(50)
-        .all()
-    )
-
-    for scheduler in due:
         try:
-            create_execution_task(
-                task_type=DELAYED_TYPE_TO_TASK_TYPE[scheduler.type],
-                payload=scheduler.payload_snapshot,
-                origin_source=EventTaskOriginSourceEnum.DELAYED_SCHEDULER,
-                origin_id=scheduler.client_id,
-                scheduled_at=scheduler.scheduled_for,
-                event_client_id=scheduler.event_client_id,
-            )
-            scheduler.state = SchedulerStateEnum.FIRED
-            scheduler.fired_at = now
-        except Exception as exc:
-            logger.exception(
-                "Failed to fire delayed_scheduler_id=%s type=%s",
-                scheduler.client_id, scheduler.type,
-            )
-            scheduler.state = SchedulerStateEnum.ERROR
-            scheduler.last_error = str(exc)[:1024]
+            await _fire_due_schedulers()
+            await _retry_errored_schedulers()
+        except Exception:
+            logger.exception("delayed_scheduler_runner: poll error")
 
-    if due:
-        db.session.commit()
-        logger.info("delayed_scheduler_runner | fired=%d", len(due))
+        next_due_at = await _get_next_scheduled_for()
+        await asyncio.sleep(POLL_INTERVAL_SECONDS)
+
+
+async def _fire_due_schedulers() -> None:
+    now = datetime.now(timezone.utc)
+    async for session in get_db_session():
+        result = await session.execute(
+            select(DelayedScheduler).where(
+                DelayedScheduler.state == SchedulerStateEnum.ACTIVE,
+                DelayedScheduler.scheduled_for <= now,
+            ).limit(50)
+        )
+        due = result.scalars().all()
+        fired = errors = 0
+        for scheduler in due:
+            try:
+                await create_execution_task(
+                    session=session,
+                    task_type=DELAYED_TYPE_TO_TASK_TYPE[scheduler.type],
+                    payload=scheduler.payload_snapshot,
+                    origin_source=EventTaskOriginSourceEnum.DELAYED_SCHEDULER,
+                    origin_id=scheduler.client_id,
+                    scheduled_at=scheduler.scheduled_for,
+                    event_client_id=scheduler.event_client_id,
+                )
+                scheduler.state    = SchedulerStateEnum.FIRED
+                scheduler.fired_at = now
+                ActivityTracker.touch()
+                fired += 1
+            except Exception as exc:
+                logger.exception("delayed_scheduler | fire_failed | id=%s", scheduler.client_id)
+                scheduler.state      = SchedulerStateEnum.ERROR
+                scheduler.last_error = str(exc)[:1024]
+                errors += 1
+        if fired or errors:
+            await session.commit()
+            logger.info("delayed_scheduler_runner | fired=%d errors=%d", fired, errors)
+
+
+async def _retry_errored_schedulers() -> None:
+    """Reset ERROR-state schedulers after a cooldown so transient failures self-recover."""
+    cutoff = datetime.now(timezone.utc) - timedelta(minutes=ERROR_RETRY_MINUTES)
+    async for session in get_db_session():
+        result = await session.execute(
+            select(DelayedScheduler).where(
+                DelayedScheduler.state == SchedulerStateEnum.ERROR,
+                DelayedScheduler.scheduled_for > datetime.now(timezone.utc),  # not yet past
+                DelayedScheduler.updated_at < cutoff,
+            ).limit(20)
+        )
+        errored = result.scalars().all()
+        for scheduler in errored:
+            scheduler.state      = SchedulerStateEnum.ACTIVE
+            scheduler.last_error = None
+            logger.warning("delayed_scheduler | error_retry | id=%s", scheduler.client_id)
+        if errored:
+            await session.commit()
+
+
+async def _get_next_scheduled_for() -> datetime | None:
+    async for session in get_db_session():
+        result = await session.execute(
+            select(func.min(DelayedScheduler.scheduled_for)).where(
+                DelayedScheduler.state == SchedulerStateEnum.ACTIVE,
+                DelayedScheduler.scheduled_for > datetime.now(timezone.utc),
+            )
+        )
+        return result.scalar_one_or_none()
 ```
 
 ### Recurring scheduler runner
 
 ```python
 # services/infra/schedulers/recurring_scheduler_runner.py
+import asyncio
 import logging
-import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
-from my_app import create_app
-from my_app.models import db
-from my_app.models.tables.schedulers.recurring_scheduler import RecurringScheduler
-from my_app.models.tables.schedulers.enums import (
-    SchedulerStateEnum,
-    RecurringSchedulerTypeEnum,
+from sqlalchemy import select, func
+
+from my_app.config import settings
+from my_app.domain.execution.enums import EventTaskOriginSourceEnum, TaskType
+from my_app.domain.schedulers.enums import (
     RecurringSchedulerIntervalValueEnum,
+    RecurringSchedulerTypeEnum,
+    SchedulerStateEnum,
 )
-from my_app.domain.execution.enums import TaskType, EventTaskOriginSourceEnum
+from my_app.models.database import get_db_session
+from my_app.models.tables.schedulers.recurring_scheduler import RecurringScheduler
 from my_app.services.infra.execution.task_factory import create_execution_task
+from my_app.services.infra.sleep.activity_tracker import ActivityTracker
 
 logger = logging.getLogger(__name__)
 
-POLL_INTERVAL_SECONDS = 10
+POLL_INTERVAL_SECONDS       = 10
+SCHEDULER_SLEEP_CAP_SECONDS = 300
+BATCH_SIZE                  = 200   # prevents unbounded load on large scheduler tables
 
 RECURRING_TYPE_TO_TASK_TYPE: dict[RecurringSchedulerTypeEnum, TaskType] = {
     RecurringSchedulerTypeEnum.SEND_REPORT: TaskType.RECURRING_SEND_REPORT,
@@ -297,61 +352,86 @@ INTERVAL_UNIT_TO_SECONDS: dict[RecurringSchedulerIntervalValueEnum, int] = {
     RecurringSchedulerIntervalValueEnum.SECONDS: 1,
     RecurringSchedulerIntervalValueEnum.MINUTES: 60,
     RecurringSchedulerIntervalValueEnum.DAYS:    86_400,
-    RecurringSchedulerIntervalValueEnum.MONTHS:  2_592_000,  # 30-day approximation
+    RecurringSchedulerIntervalValueEnum.MONTHS:  2_592_000,
 }
 
 
-def run_recurring_scheduler_runner() -> None:
-    app = create_app("production")
+async def run_recurring_scheduler_runner() -> None:
     logger.info("Recurring scheduler runner started.")
+    next_due_at: datetime | None = None
 
-    with app.app_context():
-        while True:
-            _fire_due_recurring_schedulers()
-            time.sleep(POLL_INTERVAL_SECONDS)
-
-
-def _fire_due_recurring_schedulers() -> None:
-    now = datetime.now(timezone.utc)
-
-    due = (
-        db.session.query(RecurringScheduler)
-        .filter(RecurringScheduler.state == SchedulerStateEnum.ACTIVE)
-        .all()
-    )
-
-    fired = 0
-    for scheduler in due:
-        if not _is_due(scheduler, now):
-            continue
+    while True:
+        if ActivityTracker.is_sleeping():
+            if next_due_at is not None:
+                sleep_for = max(0.0, (next_due_at - datetime.now(timezone.utc)).total_seconds())
+                sleep_for = min(sleep_for, SCHEDULER_SLEEP_CAP_SECONDS)
+            else:
+                sleep_for = SCHEDULER_SLEEP_CAP_SECONDS
+            await asyncio.sleep(sleep_for)
+            if next_due_at is None or datetime.now(timezone.utc) < next_due_at:
+                continue
+            ActivityTracker.touch()
 
         try:
-            create_execution_task(
-                task_type=RECURRING_TYPE_TO_TASK_TYPE[scheduler.type],
-                payload=scheduler.payload_snapshot,
-                origin_source=EventTaskOriginSourceEnum.RECURRING_SCHEDULER,
-                origin_id=scheduler.client_id,
-                scheduled_at=now,
-                event_client_id=scheduler.event_client_id,
-            )
-            scheduler.last_interval = now
-            fired += 1
-        except Exception as exc:
-            logger.exception(
-                "Failed to fire recurring_scheduler_id=%s type=%s",
-                scheduler.client_id, scheduler.type,
-            )
-            scheduler.last_error = str(exc)[:1024]
+            await _fire_due_recurring_schedulers()
+        except Exception:
+            logger.exception("recurring_scheduler_runner: poll error")
 
-    if fired > 0:
-        db.session.commit()
-        logger.info("recurring_scheduler_runner | fired=%d", fired)
+        next_due_at = await _get_next_run_at()
+        await asyncio.sleep(POLL_INTERVAL_SECONDS)
+
+
+async def _fire_due_recurring_schedulers() -> None:
+    now = datetime.now(timezone.utc)
+    async for session in get_db_session():
+        result = await session.execute(
+            select(RecurringScheduler)
+            .where(RecurringScheduler.state == SchedulerStateEnum.ACTIVE)
+            .limit(BATCH_SIZE)   # prevents unbounded memory load
+        )
+        candidates = result.scalars().all()
+
+        fired = errors = 0
+        for scheduler in candidates:
+            if not _is_due(scheduler, now):
+                continue
+            try:
+                await create_execution_task(
+                    session=session,
+                    task_type=RECURRING_TYPE_TO_TASK_TYPE[scheduler.type],
+                    payload=scheduler.payload_snapshot,
+                    origin_source=EventTaskOriginSourceEnum.RECURRING_SCHEDULER,
+                    origin_id=scheduler.client_id,
+                    scheduled_at=now,
+                    event_client_id=scheduler.event_client_id,
+                )
+                scheduler.last_interval = now
+                ActivityTracker.touch()
+                fired += 1
+            except Exception as exc:
+                logger.exception("recurring_scheduler | fire_failed | id=%s", scheduler.client_id)
+                scheduler.last_error = str(exc)[:1024]
+                errors += 1
+
+        if fired or errors:   # commit both successes and error updates
+            await session.commit()
+            logger.info("recurring_scheduler_runner | fired=%d errors=%d", fired, errors)
+
+
+async def _get_next_run_at() -> datetime | None:
+    async for session in get_db_session():
+        result = await session.execute(
+            select(func.min(RecurringScheduler.next_run_at)).where(
+                RecurringScheduler.state == SchedulerStateEnum.ACTIVE
+            )
+        )
+        return result.scalar_one_or_none()
 
 
 def _is_due(scheduler: RecurringScheduler, now: datetime) -> bool:
-    unit_seconds = INTERVAL_UNIT_TO_SECONDS[scheduler.interval_value]
+    unit_seconds     = INTERVAL_UNIT_TO_SECONDS[scheduler.interval_value]
     interval_seconds = scheduler.interval * unit_seconds
-    reference = scheduler.last_interval or scheduler.created_at
+    reference        = scheduler.last_interval or scheduler.created_at
     return (now - reference).total_seconds() >= interval_seconds
 ```
 
@@ -532,6 +612,10 @@ ExecutionTask (reminder)
 - **Scheduler runners are idempotent.** Running two runner processes simultaneously is safe because the atomic task creation and `last_interval` update are committed together — a concurrent runner that reads the same scheduler finds `last_interval` already updated and skips it.
 - **Do not cancel a scheduler by deleting its row.** Set `state = CANCELED`. Deleted rows cannot be audited.
 - **Workers creating schedulers must pass `origin_source=WORKER, origin_id=task_id`.** This is the contract for full traceability.
+- **Commit on both fired and errored.** The recurring runner commits `if fired or errors` — never only on success. `last_error` must be persisted even when no tasks were successfully fired so failures are visible in the DB.
+- **Recurring runner must use `LIMIT(BATCH_SIZE)`.** Never load all `ACTIVE` schedulers without a bound. With thousands of active schedulers an unbounded query causes memory spikes on every poll cycle.
+- **ERROR-state delayed schedulers must self-recover.** `_retry_errored_schedulers()` resets `ERROR` → `ACTIVE` after `ERROR_RETRY_MINUTES` (15 min default) for schedulers whose `scheduled_for` is still in the future. Without this, a transient DB error permanently kills the job.
+- **Scheduler runners participate in sleep mode using the cached alarm-clock pattern.** Cache `next_due_at` from the last active cycle. During sleep, sleep to that time rather than a flat interval. Call `ActivityTracker.touch()` before submitting any task so the full system wakes before the task enters the queue. See [22_performance.md](22_performance.md) for the full pattern.
 
 ---
 

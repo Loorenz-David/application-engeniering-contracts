@@ -14,11 +14,21 @@ from my_app.config import settings
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    from my_app.models.database import init_db
+    import logging
+    from my_app.models.database import init_db, close_db
     await init_db()
     _start_socket_pubsub(app)
+    logging.getLogger("my_app.startup").info(
+        "startup | env=%s database_url=%s redis_url=%s "
+        "db_pool_size=%d db_max_overflow=%d db_pool_recycle=%d",
+        settings.environment,
+        settings.database_url,
+        settings.redis_url,
+        settings.db_pool_size,
+        settings.db_max_overflow,
+        settings.db_pool_recycle,
+    )
     yield
-    from my_app.models.database import close_db
     await close_db()
 
 
@@ -83,6 +93,15 @@ class Settings(BaseSettings):
     jwt_access_token_expire_minutes:  int = 30
     jwt_refresh_token_expire_days:    int = 30
 
+    # Database connection pool
+    db_pool_size:    int = Field(10,   alias="DB_POOL_SIZE")
+    db_max_overflow: int = Field(20,   alias="DB_MAX_OVERFLOW")
+    db_pool_recycle: int = Field(1800, alias="DB_POOL_RECYCLE")
+
+    # Idle sleep mode — see 22_performance.md
+    sleep_mode_enabled:           bool = Field(True,  alias="SLEEP_MODE_ENABLED")
+    idle_sleep_threshold_seconds: int  = Field(600,   alias="IDLE_SLEEP_THRESHOLD_SECONDS")
+
     # Environment
     environment: str = "development"   # "development" | "testing" | "production"
 
@@ -133,6 +152,10 @@ async def init_db() -> None:
     _engine = create_async_engine(
         settings.database_url,
         connect_args={"server_settings": {"timezone": "UTC"}},
+        pool_size=settings.db_pool_size,
+        max_overflow=settings.db_max_overflow,
+        pool_recycle=settings.db_pool_recycle,
+        pool_timeout=30,
         pool_pre_ping=True,
         echo=settings.environment == "development",
     )
@@ -196,18 +219,76 @@ def register_v1_routers(app: FastAPI) -> None:
 
 ## Middleware contract
 
-FastAPI middleware is added via `app.add_middleware()`. Request decompression and response compression are ASGI middleware classes, not `before_request` / `after_request` hooks:
+FastAPI middleware is added via `app.add_middleware()`. ASGI middleware classes, not `before_request` / `after_request` hooks.
+
+**Standard middleware stack (order matters — registered in reverse execution order):**
 
 ```python
 # my_app/__init__.py — inside create_app()
-from my_app.routers.middleware.cache_headers import NoCacheMiddleware
-from my_app.routers.middleware.decompress import DecompressMiddleware
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
+from my_app.routers.middleware.no_cache import NoCacheMiddleware
+from my_app.routers.middleware.sleep import SleepMiddleware
+from my_app.routers.middleware.timeout import TimeoutMiddleware
 
-app.add_middleware(NoCacheMiddleware, path_prefix="/api")
-app.add_middleware(DecompressMiddleware)
+# Registered last → executes first on request, last on response
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.frontend_origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["Content-Type", "Authorization"],
+)
+
+# Gzip: compresses responses > 1 KB — typically 70–80% reduction for JSON
+app.add_middleware(GZipMiddleware, minimum_size=1000)
+
+# No-cache: sets Cache-Control: no-store on all /api/ responses
+app.add_middleware(NoCacheMiddleware)
+
+# Sleep: touches ActivityTracker on every request — wakes the app if it is sleeping
+app.add_middleware(SleepMiddleware)
+
+# Timeout: enforces a hard deadline on every request — prevents slow clients
+# or DB deadlocks from holding a uvicorn worker indefinitely
+app.add_middleware(TimeoutMiddleware)
 ```
 
-Middleware registered here applies to all routes. Route-specific header overrides belong in the route handler.
+**`TimeoutMiddleware` implementation:**
+
+```python
+# routers/middleware/timeout.py
+import asyncio
+import os
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
+from fastapi.responses import JSONResponse
+
+REQUEST_TIMEOUT_SECONDS = int(os.environ.get("REQUEST_TIMEOUT_SECONDS", "30"))
+
+
+class TimeoutMiddleware(BaseHTTPMiddleware):
+    def __init__(self, app, timeout: int = REQUEST_TIMEOUT_SECONDS):
+        super().__init__(app)
+        self.timeout = timeout
+
+    async def dispatch(self, request: Request, call_next):
+        try:
+            return await asyncio.wait_for(call_next(request), timeout=self.timeout)
+        except asyncio.TimeoutError:
+            return JSONResponse(
+                {"detail": "Request timed out."},
+                status_code=504,
+            )
+```
+
+**Rules:**
+- `REQUEST_TIMEOUT_SECONDS` defaults to 30. Override via env var for specific deployments — never hardcode.
+- File upload endpoints must be excluded or given a longer timeout. Override by not running the timeout check when `request.url.path.startswith("/api/v1/files/")`.
+- The timeout fires the full ASGI cancel path — background tasks spawned inside the handler are also cancelled. Long-running work must use the task queue (see [16_background_jobs.md](16_background_jobs.md)), not inline async work.
+- WebSocket connections are not subject to this middleware — their lifecycle is managed by the socket handler.
+
+Middleware registered here applies to all routes. Route-specific header overrides belong in the route handler. See [22_performance.md](22_performance.md) for the `NoCacheMiddleware` implementation.
 
 ---
 

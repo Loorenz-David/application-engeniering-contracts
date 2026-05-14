@@ -8,14 +8,24 @@ Phases
     3   Service layer        ServiceContext, run_service(), WorkContext, identity resolution
     4   Container runtime    Dockerfile, docker-compose, .dockerignore, Makefile
     5   Auth/RBAC            JWT, RBAC, workspace membership
-    6   Realtime             Socket wiring and realtime infrastructure
-    7   Execution            Background execution registry and task wiring
+    6   Realtime             Contract event bus (domain_event, build_event, event_bus, socket/audit/webhook handlers),
+                             Socket.IO connection manager, Redis client, lifespan handler registration
+    7   Execution            PostgreSQL-backed async task queue: ExecutionTask, ExecutionPayload, task_factory,
+                             task_router, worker_base (SELECT FOR UPDATE SKIP LOCKED), typed payload dataclasses,
+                             audit log (AuditLog, write_audit, list_audit_events), Event mixin __init_subclass__
+                             enforcement
     8   Presence             Presence tracking and view activity handlers
-    9   Notifications        Notification models and handlers
-    10  Case/Image records   Foundation case and image domains, models, serializers
+    9   Notifications        Contract-compliant Notification (user_id/read_at), PushSubscription,
+                             mark_notifications_read, list_notifications, get_unread_notification_count,
+                             VAPID push helper, case notification target resolver, full notifications router
+    10  Case/Image records   Case and image domains, models, enums, serializers, command/query services,
+                             case and image API routers, event bus wiring for all case commands,
+                             file storage (PendingUpload, presigned URL flow, dev storage router,
+                             expired upload cleanup script), content mention tracking
     11  Observability        Structured logging, correlation IDs, request middleware
     12  Testing              pytest scaffolding, fixtures, test isolation, test commands
-    13  Worker runtime       Queue/worker runtime, retry/dead-letter scaffolding
+    13  Worker runtime       Async worker runtime, notification/webhook workers, task router process,
+                             delayed and recurring scheduler models, scheduler factory and runners
     14  CI/CD                GitHub Actions workflows and CI validation hooks
     15  Replayability        Replay helpers, replay metadata, event-store interfaces
     16  Operational CLI      Typer operational commands and make targets
@@ -26,9 +36,9 @@ Usage
     python run/bootstrap.py --app-name my_app --output-dir ~/Developer
     python run/bootstrap.py --app-name my_app --phase 1
     python run/bootstrap.py --app-name my_app --phase 1-3
-        python run/bootstrap.py --app-name my_app --phase 4
-        python run/bootstrap.py --app-name my_app --phase all
-        python run/bootstrap.py --app-name my_app --legacy-phase-numbering --phase 4-8
+    python run/bootstrap.py --app-name my_app --phase 4
+    python run/bootstrap.py --app-name my_app --phase all
+    python run/bootstrap.py --app-name my_app --legacy-phase-numbering --phase 4-8
     python run/bootstrap.py --app-name my_app --force
 """
 from __future__ import annotations

@@ -64,19 +64,28 @@ class ExecutionTaskStateEnum(enum.Enum):
 
 class TaskType(enum.Enum):
     # Instant tasks — triggered directly by commands
-    NOTIFICATION = "notification"
-    UPLOAD_IMAGE = "upload_image"
+    NOTIFICATION    = "notification"
+    UPLOAD_IMAGE    = "upload_image"
+    DELIVER_WEBHOOK = "deliver_webhook"
+
+    # Notification pipeline tasks (phase 8)
+    CREATE_NOTIFICATIONS   = "create_notifications"
+    SEND_PUSH_NOTIFICATION = "send_push_notification"
 
     # Delayed scheduler tasks — created by DelayedScheduler when due
-    DELAYED_NOTIFY_TO_CUSTOMER = "delayed_notify_to_customer"
-    DELAYED_SEND_REPORT = "delayed_send_report"
-    DELAYED_REMINDER = "delayed_reminder"
-    DELAYED_BATCH_NOTIFICATION = "delayed_batch_notification"
+    DELAYED_NOTIFY_TO_CUSTOMER  = "delayed_notify_to_customer"
+    DELAYED_SEND_REPORT         = "delayed_send_report"
+    DELAYED_REMINDER            = "delayed_reminder"
+    DELAYED_BATCH_NOTIFICATION  = "delayed_batch_notification"
 
     # Recurring scheduler tasks — created by RecurringScheduler on each interval
     RECURRING_SEND_REPORT = "recurring_send_report"
-    RECURRING_REMINDER = "recurring_reminder"
-    RECURRING_PIN_TASK = "recurring_pin_task"
+    RECURRING_REMINDER    = "recurring_reminder"
+    RECURRING_PIN_TASK    = "recurring_pin_task"
+
+    # Presence view-record tasks — enqueued by socket connect/disconnect handlers
+    RECORD_VIEW_START = "record_view_start"
+    RECORD_VIEW_END   = "record_view_end"
 
 
 class EventTaskOriginSourceEnum(enum.Enum):
@@ -234,6 +243,9 @@ logger = logging.getLogger(__name__)
 QUEUE_MAP: dict[TaskType, str] = {
     TaskType.NOTIFICATION:               "queue:notifications",
     TaskType.UPLOAD_IMAGE:               "queue:uploads",
+    TaskType.DELIVER_WEBHOOK:            "queue:webhooks",
+    TaskType.CREATE_NOTIFICATIONS:       "queue:notifications",
+    TaskType.SEND_PUSH_NOTIFICATION:     "queue:notifications",
     TaskType.DELAYED_NOTIFY_TO_CUSTOMER: "queue:notifications",
     TaskType.DELAYED_SEND_REPORT:        "queue:reports",
     TaskType.DELAYED_REMINDER:           "queue:notifications",
@@ -241,9 +253,11 @@ QUEUE_MAP: dict[TaskType, str] = {
     TaskType.RECURRING_SEND_REPORT:      "queue:reports",
     TaskType.RECURRING_REMINDER:         "queue:notifications",
     TaskType.RECURRING_PIN_TASK:         "queue:tasks",
+    TaskType.RECORD_VIEW_START:          "queue:presence",
+    TaskType.RECORD_VIEW_END:            "queue:presence",
 }
 
-POLL_INTERVAL_SECONDS = 2
+POLL_INTERVAL_SECONDS = 0.5   # fallback only — primary wake is pg_notify (see below)
 BATCH_SIZE = 50
 
 
@@ -354,7 +368,8 @@ from my_app.services.infra.redis import get_redis_client
 
 logger = logging.getLogger(__name__)
 
-BACKOFF_SECONDS = [30, 120, 300]  # retry intervals by attempt index
+BACKOFF_SECONDS = [30, 120, 300]  # base retry intervals by attempt index
+BACKOFF_JITTER  = 0.15           # ±15% random jitter — prevents thundering-herd retries
 
 
 def run_worker(queue_name: str, handler_map: dict[TaskType, Callable[[dict, str], None]]) -> None:
@@ -417,13 +432,16 @@ def _process_task(task_client_id: str, worker_id: str, handler_map: dict[TaskTyp
 
 
 def _schedule_retry_or_fail(task: ExecutionTask, exc: Exception) -> None:
+    import random
     task.try_count += 1
     task.last_error = str(exc)[:1024]
 
     if task.try_count < task.max_try:
-        delay = BACKOFF_SECONDS[min(task.try_count - 1, len(BACKOFF_SECONDS) - 1)]
+        base  = BACKOFF_SECONDS[min(task.try_count - 1, len(BACKOFF_SECONDS) - 1)]
+        jitter = base * BACKOFF_JITTER
+        delay = base + random.uniform(-jitter, jitter)
         task.state = ExecutionTaskStateEnum.RETRY_SCHEDULED
-        task.next_retry_at = datetime.now(timezone.utc) + timedelta(seconds=delay)
+        task.next_retry_at = datetime.now(timezone.utc) + timedelta(seconds=max(delay, 1))
         logger.warning(
             "task_id=%s retry_scheduled | attempt=%d next_retry_at=%s",
             task.client_id, task.try_count, task.next_retry_at,
@@ -454,9 +472,13 @@ from my_app.services.infra.execution.worker_base import run_worker
 from my_app.domain.execution.enums import TaskType
 from my_app.services.infra.jobs.handlers.notification import handle_notification
 from my_app.services.infra.jobs.handlers.reminder import handle_reminder
+from my_app.services.tasks.notifications.create_notifications import handle_create_notifications
+from my_app.services.tasks.notifications.send_push_notification import handle_send_push_notification
 
 HANDLER_MAP = {
     TaskType.NOTIFICATION:               handle_notification,
+    TaskType.CREATE_NOTIFICATIONS:       handle_create_notifications,
+    TaskType.SEND_PUSH_NOTIFICATION:     handle_send_push_notification,
     TaskType.DELAYED_NOTIFY_TO_CUSTOMER: handle_notification,
     TaskType.DELAYED_REMINDER:           handle_reminder,
     TaskType.DELAYED_BATCH_NOTIFICATION: handle_notification,
@@ -465,6 +487,20 @@ HANDLER_MAP = {
 
 if __name__ == "__main__":
     run_worker("queue:notifications", HANDLER_MAP)
+
+# workers/presence_worker.py
+from my_app.services.infra.execution.worker_base import run_worker
+from my_app.domain.execution.enums import TaskType
+from my_app.services.tasks.presence.record_view_start import handle_record_view_start
+from my_app.services.tasks.presence.record_view_end import handle_record_view_end
+
+HANDLER_MAP = {
+    TaskType.RECORD_VIEW_START: handle_record_view_start,
+    TaskType.RECORD_VIEW_END:   handle_record_view_end,
+}
+
+if __name__ == "__main__":
+    run_worker("queue:presence", HANDLER_MAP)
 ```
 
 ---
@@ -535,6 +571,34 @@ Deserialising at handler entry means a missing or misnamed key raises `TypeError
 - Handlers must not modify the payload.
 - Handlers raise on unrecoverable failure — the worker's retry logic handles it.
 - One handler = one side effect. Do not combine multiple integrations in one handler.
+
+**DB access in handlers:**
+
+Handlers run outside of a request context, so they cannot use the FastAPI `get_db` dependency. Use `task_db_session()` from `services/infra/execution/db.py` instead — it is an `asynccontextmanager` backed by the same shared session factory:
+
+```python
+# services/infra/execution/db.py
+from contextlib import asynccontextmanager
+from typing import AsyncIterator
+from sqlalchemy.ext.asyncio import AsyncSession
+from my_app.models.database import _session_factory
+
+@asynccontextmanager
+async def task_db_session() -> AsyncIterator[AsyncSession]:
+    if _session_factory is None:
+        raise RuntimeError("DB not initialised. Call init_db() before running workers.")
+    async with _session_factory() as session:
+        yield session
+```
+
+Usage in a handler:
+```python
+from my_app.services.infra.execution.db import task_db_session
+
+async def handle_record_view_start(raw: dict, task_id: str) -> None:
+    async with task_db_session() as session:
+        # ... query and commit
+```
 
 ---
 
@@ -672,6 +736,380 @@ def handle_notification(raw: dict, task_id: str) -> None:
 On a retry after a crash, the event may already be `IN_PROGRESS`. The handler proceeds normally — `IN_PROGRESS` is not terminal, so retries are safe. Only `COMPLETED` and `FAILED` are guards that cause an early return.
 
 For tasks with no event (recurring reports, batch jobs where `event_client_id` is `NULL`), use a DB flag on the affected entity or a Redis idempotency key with a TTL covering the maximum retry window.
+
+---
+
+## Retry backoff with jitter
+
+`BACKOFF_SECONDS` defines the base delay per attempt. A ±15% random jitter is applied so that batch failures (e.g., 50 tasks failing simultaneously) do not retry at the exact same moment — staggering the retry storm:
+
+| Attempt | Base delay | With ±15% jitter |
+|---|---|---|
+| 1st retry | 30s | 25.5s – 34.5s |
+| 2nd retry | 120s | 102s – 138s |
+| 3rd retry | 300s | 255s – 345s |
+
+**Rule:** Never use a fixed retry delay. Every worker using `_schedule_retry_or_fail` inherits jitter automatically from `BACKOFF_JITTER`.
+
+---
+
+## Task timeout enforcement
+
+Wrap handler execution in `asyncio.wait_for()` to prevent a hanging task from blocking the worker indefinitely. Default timeout is 5 minutes; override per handler via the timeout map:
+
+```python
+# services/infra/execution/worker_base.py
+import asyncio
+
+HANDLER_TIMEOUT_SECONDS: dict[str, int] = {
+    "default":        300,   # 5 minutes
+    "upload_image":   3600,  # 1 hour — large file operations
+    "send_report":    600,   # 10 minutes — report generation
+}
+
+
+async def _execute_with_timeout(handler, raw_payload: dict, task_client_id: str, task_type_value: str) -> None:
+    timeout = HANDLER_TIMEOUT_SECONDS.get(task_type_value, HANDLER_TIMEOUT_SECONDS["default"])
+    try:
+        await asyncio.wait_for(handler(raw_payload, task_client_id), timeout=timeout)
+    except asyncio.TimeoutError:
+        raise RuntimeError(f"Handler timed out after {timeout}s")
+```
+
+The worker calls `await _execute_with_timeout(handler, ...)` instead of `await handler(raw, task_id)` directly. On timeout, the worker raises, which triggers `_schedule_retry_or_fail` — the task enters `RETRY_SCHEDULED` if retries remain, or `FAIL` if exhausted.
+
+**Rule:** Long-running handlers (file processing, report generation) must declare their timeout in `HANDLER_TIMEOUT_SECONDS`. Never use the default timeout for a handler that is expected to run longer than 5 minutes.
+
+---
+
+## Worker observability
+
+Every task execution must emit structured log lines that carry enough context to diagnose failures without reading the DB. Add elapsed time tracking to `_process_task`:
+
+```python
+# services/infra/execution/worker_base.py
+import time
+
+def _process_task(task_client_id: str, worker_id: str, handler_map: ...) -> None:
+    start = time.monotonic()
+    # ... atomic claim (unchanged) ...
+
+    try:
+        await _execute_with_timeout(handler, task.payload.payload, task.client_id, task.task_type.value)
+        elapsed_ms = (time.monotonic() - start) * 1000
+        task.state      = ExecutionTaskStateEnum.COMPLETED
+        task.completed_at = datetime.now(timezone.utc)
+        db.session.commit()
+        logger.info(
+            "task_completed | task_id=%s task_type=%s worker=%s elapsed_ms=%.1f",
+            task_client_id, task.task_type.value, worker_id, elapsed_ms,
+        )
+    except Exception as exc:
+        elapsed_ms = (time.monotonic() - start) * 1000
+        logger.error(
+            "task_failed | task_id=%s task_type=%s worker=%s elapsed_ms=%.1f error=%s",
+            task_client_id, task.task_type.value, worker_id, elapsed_ms, str(exc)[:200],
+        )
+        _schedule_retry_or_fail(task, exc)
+```
+
+The task router logs queue depth each cycle so ops teams can detect backlog without querying the DB:
+
+```python
+def _route_open_tasks(redis) -> None:
+    tasks = ...
+    if tasks:
+        depths = {name: redis.llen(name) for name in set(QUEUE_MAP.values())}
+        logger.info("task_router | routed=%d queue_depths=%s", len(tasks), depths)
+```
+
+**Rules:**
+- Every `task_completed` and `task_failed` log must include `task_id`, `task_type`, `worker_id`, and `elapsed_ms`. These four fields are the minimum required for incident correlation.
+- Log at `INFO` for completions, `WARNING` for retries, `ERROR` for permanent failures and stale recoveries.
+
+---
+
+## Stale task recovery
+
+A worker process that crashes mid-execution leaves tasks stuck in `IN_PROGRESS` with no worker to complete or fail them. The task router scans for these and resets them to `OPEN` on each poll cycle:
+
+```python
+# services/infra/execution/task_router.py
+STALE_IN_PROGRESS_MINUTES = 30   # configurable via settings.task_stale_threshold_minutes
+
+
+def _cleanup_stale_tasks() -> None:
+    cutoff = datetime.now(timezone.utc) - timedelta(minutes=STALE_IN_PROGRESS_MINUTES)
+    tasks = (
+        db.session.query(ExecutionTask)
+        .filter(
+            ExecutionTask.state    == ExecutionTaskStateEnum.IN_PROGRESS,
+            ExecutionTask.locked_at < cutoff,
+        )
+        .limit(BATCH_SIZE)
+        .all()
+    )
+    for task in tasks:
+        task.state      = ExecutionTaskStateEnum.OPEN
+        task.worker_id  = None
+        task.locked_at  = None
+        logger.warning(
+            "stale_task_recovered | task_id=%s task_type=%s locked_at=%s",
+            task.client_id, task.task_type.value, task.locked_at,
+        )
+    if tasks:
+        db.session.commit()
+```
+
+Add `_cleanup_stale_tasks()` to the router loop:
+
+```python
+while True:
+    _route_open_tasks(redis)
+    _requeue_retry_scheduled_tasks()
+    _cleanup_stale_tasks()
+    time.sleep(POLL_INTERVAL_SECONDS)
+```
+
+**Rules:**
+- `STALE_IN_PROGRESS_MINUTES` must exceed the longest declared handler timeout. **Invariant: `STALE_IN_PROGRESS_MINUTES > max(HANDLER_TIMEOUT_SECONDS.values()) / 60`.** With `upload_image = 3600s = 60 min`, the default must be at least 90 minutes — not 30. A stale threshold shorter than a legitimate handler runtime causes a live task to be recovered and re-claimed by a second worker while the first is still running.
+- Recovered tasks re-enter as `OPEN` — they are retried by the next available worker. The `try_count` is not reset, so they consume a retry slot. If the task reaches `max_try`, it fails permanently as normal.
+- Stale recovery is a safety net for crashed workers, not a substitute for graceful shutdown. Workers must catch `SIGTERM` and mark in-flight tasks as `RETRY_SCHEDULED` before exiting.
+
+---
+
+## Stuck `PENDING` task recovery
+
+A task enters `PENDING` when the router commits the state update and pushes the `task_client_id` to Redis. If the Redis push succeeds but the subsequent DB commit fails (rare but possible on transient DB error), the task re-enters `OPEN` on the next router cycle — safe. If the commit succeeds but the Redis entry is silently lost (eviction, Redis restart, `allkeys-lru` under memory pressure), the task is `PENDING` in the DB with no corresponding queue entry. Stale recovery ignores `PENDING` state. The task is permanently stuck.
+
+Add a `_recover_stuck_pending_tasks()` pass to the router loop. Any task that has been `PENDING` for longer than a short window (5 minutes) was never picked up by a worker and should be reset to `OPEN`:
+
+```python
+# services/infra/execution/task_router.py
+STUCK_PENDING_MINUTES = 5
+
+
+async def _recover_stuck_pending_tasks() -> None:
+    cutoff = datetime.now(timezone.utc) - timedelta(minutes=STUCK_PENDING_MINUTES)
+    async for session in get_db_session():
+        result = await session.execute(
+            select(ExecutionTask).where(
+                ExecutionTask.state == ExecutionTaskStateEnum.PENDING,
+                ExecutionTask.created_at < cutoff,
+            ).limit(BATCH_SIZE)
+        )
+        tasks = result.scalars().all()
+        for task in tasks:
+            task.state = ExecutionTaskStateEnum.OPEN
+            logger.warning(
+                "stuck_pending_recovered | task_id=%s task_type=%s",
+                task.client_id, task.task_type.value,
+            )
+        if tasks:
+            await session.commit()
+```
+
+Add to the router loop alongside stale recovery:
+
+```python
+await _route_open_tasks(redis)
+await _requeue_retry_scheduled_tasks()
+await _cleanup_stale_tasks()
+await _recover_stuck_pending_tasks()
+```
+
+**Rules:**
+- `STUCK_PENDING_MINUTES = 5` is appropriate. A task picked up by a worker transitions to `IN_PROGRESS` within seconds. Any task still `PENDING` after 5 minutes has a lost queue entry.
+- Do not set this lower than 60 seconds — a brief Redis connection hiccup should not cause premature recovery before the worker has a chance to claim the task.
+
+---
+
+## Worker session isolation for long-running handlers
+
+The default worker pattern holds a single DB session open from claim through handler completion. For short handlers (< 1s) this is harmless. For `upload_image` handlers (up to 3600s), one connection pool slot is held per active upload. With `pool_size=20`, 20 concurrent uploads exhaust the pool and block all HTTP requests from obtaining DB connections.
+
+Split worker execution into three discrete sessions:
+
+```python
+# services/infra/execution/worker_base.py
+
+async def _process_task(task_client_id, worker_id, handler_map) -> None:
+    # 1. Claim session — short, closes immediately after claim
+    task_type_value, raw_payload = await _claim_task(task_client_id, worker_id)
+    if task_type_value is None:
+        return
+
+    handler = handler_map.get(task_type_value)
+    if not handler:
+        await _mark_no_handler(task_client_id)
+        return
+
+    # 2. Handler runs — opens its own session via task_db_session()
+    # Connection pool slot is free during handler execution
+    start = time.monotonic()
+    try:
+        await _execute_with_timeout(handler, raw_payload, task_client_id, task_type_value.value)
+        elapsed_ms = (time.monotonic() - start) * 1000
+        # 3. Finalize session — short, closes immediately after state update
+        await _finalize_task(task_client_id, worker_id, elapsed_ms)
+    except Exception as exc:
+        elapsed_ms = (time.monotonic() - start) * 1000
+        await _fail_task(task_client_id, worker_id, exc, elapsed_ms)
+```
+
+**Rules:**
+- The claim session must close before the handler starts. Never hold a connection open during handler execution.
+- Handlers access the DB via `task_db_session()` — not via the claim session. The claim session's connection is returned to the pool before the handler runs.
+- The finalize session is a fresh connection, opened only to write the terminal state (`COMPLETED` or `RETRY_SCHEDULED`/`FAIL`).
+
+---
+
+## Worker graceful shutdown (SIGTERM)
+
+Workers killed mid-handler leave tasks in `IN_PROGRESS`. Without a SIGTERM handler, the only recovery is stale recovery (90 minutes after fix). Graceful shutdown marks the in-flight task as `RETRY_SCHEDULED` immediately, so the task is picked up by another worker within seconds.
+
+```python
+# services/infra/execution/worker_base.py
+import signal
+import asyncio
+
+_shutdown_event: asyncio.Event = asyncio.Event()
+
+
+def _register_shutdown_handler() -> None:
+    loop = asyncio.get_event_loop()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        loop.add_signal_handler(sig, _shutdown_event.set)
+
+
+async def run_worker(queue_name, handler_map) -> None:
+    _register_shutdown_handler()
+    redis = get_redis_client(settings.redis_url)
+    worker_id = f"{socket.gethostname()}:{queue_name}:{int(time.time())}"
+    logger.info("worker_start | queue=%s worker_id=%s", queue_name, worker_id)
+
+    current_task_id: str | None = None
+    try:
+        while not _shutdown_event.is_set():
+            raw = redis.blpop(queue_name, timeout=2)
+            if not raw:
+                continue
+            current_task_id = raw[1] if isinstance(raw[1], str) else raw[1].decode()
+            await _process_task(current_task_id, worker_id, handler_map)
+            current_task_id = None
+    finally:
+        if current_task_id:
+            await _rescue_in_flight_task(current_task_id)
+        logger.info("worker_shutdown | queue=%s worker_id=%s", queue_name, worker_id)
+
+
+async def _rescue_in_flight_task(task_client_id: str) -> None:
+    async for session in get_db_session():
+        result = await session.execute(
+            select(ExecutionTask).where(ExecutionTask.client_id == task_client_id)
+        )
+        task = result.scalar_one_or_none()
+        if task and task.state == ExecutionTaskStateEnum.IN_PROGRESS:
+            task.state = ExecutionTaskStateEnum.RETRY_SCHEDULED
+            task.next_retry_at = datetime.now(timezone.utc) + timedelta(seconds=30)
+            logger.warning("worker_sigterm_rescue | task_id=%s", task_client_id)
+            await session.commit()
+```
+
+**Rules:**
+- `blpop` timeout must be short (2s) so the shutdown event is checked frequently. A 5s timeout means up to 5s delay after SIGTERM before the loop notices the shutdown signal.
+- `_rescue_in_flight_task` must be called in a `finally` block — it must run even if the handler raised an unhandled exception.
+- The rescued task enters `RETRY_SCHEDULED` with a 30s delay, not `OPEN`. This prevents the task from being immediately re-claimed by another worker before the dying process has fully exited.
+
+---
+
+## Task router — PostgreSQL NOTIFY/LISTEN hybrid
+
+The task router uses a hybrid wake model: a Postgres trigger fires `pg_notify` the instant a task enters `OPEN` state; a dedicated `asyncpg` connection listens and unblocks the router immediately. A slow fallback poll (`POLL_INTERVAL_SECONDS = 0.5`) runs concurrently as a safety net for notifications lost during reconnects.
+
+This eliminates idle DB hammering (no polling when no tasks exist) while keeping sub-10ms pickup latency under load.
+
+### Postgres trigger (migration)
+
+```sql
+CREATE OR REPLACE FUNCTION notify_task_open()
+RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  PERFORM pg_notify('task_open', NEW.client_id::text);
+  RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER trg_task_open
+AFTER INSERT OR UPDATE OF state ON execution_tasks
+FOR EACH ROW WHEN (NEW.state = 'open')
+EXECUTE FUNCTION notify_task_open();
+```
+
+Add this trigger in its own migration, after the `execution_tasks` table migration. The trigger fires on both `INSERT` (instant tasks) and `UPDATE OF state` (retry re-queues).
+
+### LISTEN connection
+
+A dedicated `asyncpg` connection — separate from the SQLAlchemy pool — holds the `LISTEN` channel. It reconnects automatically on drop so a transient disconnect never silently disables the wake mechanism:
+
+```python
+# services/infra/execution/task_router.py
+import asyncpg
+
+_notify_event: asyncio.Event = asyncio.Event()
+
+
+async def _listen_for_task_events() -> None:
+    while True:
+        try:
+            dsn = settings.database_url.replace("postgresql+asyncpg://", "postgresql://")
+            conn = await asyncpg.connect(dsn)
+
+            async def _on_notify(conn, pid, channel, payload):
+                _notify_event.set()
+
+            await conn.add_listener("task_open", _on_notify)
+            logger.info("task_router | LISTEN connection established")
+
+            while not conn.is_closed():
+                await asyncio.sleep(10)
+                await conn.execute("SELECT 1")  # keepalive
+        except Exception:
+            logger.exception("task_router | LISTEN connection lost — reconnecting in 5s")
+            await asyncio.sleep(5)
+```
+
+### Router loop
+
+The router waits on `_notify_event` with a timeout. Either the event fires (NOTIFY received) or the timeout expires (fallback poll). Both paths drain OPEN tasks identically:
+
+```python
+FALLBACK_POLL_SECONDS = 30   # safety net for missed notifications only
+
+
+async def run_task_router() -> None:
+    logger.info("Task router started.")
+    redis = get_redis_client(settings.redis_url)
+    asyncio.create_task(_listen_for_task_events())
+    while True:
+        try:
+            await asyncio.wait_for(_notify_event.wait(), timeout=FALLBACK_POLL_SECONDS)
+        except asyncio.TimeoutError:
+            pass
+        _notify_event.clear()
+        try:
+            await _route_open_tasks(redis)
+            await _requeue_retry_scheduled_tasks()
+            await _cleanup_stale_tasks()
+        except Exception:
+            logger.exception("task_router: poll error")
+```
+
+**Rules:**
+- The LISTEN connection is always alive — including during sleep mode (see [22_performance.md](22_performance.md)). A `pg_notify` from an external write wakes the router even when the app is otherwise idle.
+- `FALLBACK_POLL_SECONDS = 30` is a correctness guard, not a throughput mechanism. Do not lower it to increase throughput — use the NOTIFY path instead.
+- The DSN conversion (`postgresql+asyncpg://` → `postgresql://`) is required because `asyncpg.connect()` does not accept the SQLAlchemy driver prefix.
+- Never share the LISTEN connection with the SQLAlchemy session pool. It must be a dedicated connection so its lifecycle is independent of request-scoped sessions.
 
 ---
 

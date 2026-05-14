@@ -400,6 +400,52 @@ CI runs unit tests first (fast gate), then integration tests (slower gate). A fa
 
 ---
 
+## N+1 detection in integration tests
+
+Every list query that serializes relationships must have at least one integration test that asserts the query count. Use a SQLAlchemy event listener fixture to count SQL statements:
+
+```python
+# tests/conftest.py
+import pytest
+from sqlalchemy import event as sa_event
+
+
+@pytest.fixture
+def count_queries(async_engine):
+    """Collects every SQL statement issued during the test. Use to assert no N+1."""
+    queries: list[str] = []
+
+    @sa_event.listens_for(async_engine.sync_engine, "before_cursor_execute")
+    def _count(conn, cursor, statement, parameters, context, executemany):
+        queries.append(statement)
+
+    yield queries
+
+    sa_event.remove(async_engine.sync_engine, "before_cursor_execute", _count)
+```
+
+**Usage in an integration test:**
+
+```python
+def test_list_records_no_n_plus_one(db, workspace, admin_ctx, count_queries):
+    # Seed 5 records, each with 3 line items
+    for _ in range(5):
+        _create_record_with_items(db, workspace, item_count=3)
+
+    count_queries.clear()
+    list_records(admin_ctx)
+
+    # Expect: 1 query for records + 1 selectinload for line_items = 2 total
+    assert len(count_queries) <= 2, (
+        f"N+1 detected: {len(count_queries)} queries for 5 records. "
+        f"Queries issued: {count_queries}"
+    )
+```
+
+**Rule:** The expected maximum is `1 + len(selectinloads)` per list fetch. If a list query has two `selectinload` calls, the ceiling is 3 queries regardless of how many rows are returned. A test that seeds N rows and observes N+1 or 2N+1 queries is catching an N+1 bug — add the missing `selectinload` to the query.
+
+---
+
 ## What tests must NOT do
 
 - Hit production or staging databases

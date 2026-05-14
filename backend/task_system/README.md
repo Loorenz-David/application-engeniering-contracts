@@ -137,6 +137,9 @@ make dev-up
 # Step 7: Run database migrations
 make db-migrate
 
+# Step 7b: Apply Postgres LISTEN/NOTIFY trigger (run once after migrations)
+make db-triggers
+
 # Step 8: Start the FastAPI app (runs on auto-detected free port)
 make run
 
@@ -150,13 +153,20 @@ curl http://localhost:8000/health
 After `cd /path/to/new-app-root/backend/app`:
 
 ```bash
-make help              # Show all targets
-make dev-up           # Start Docker services (postgres + redis)
-make dev-down         # Stop Docker services
-make dev-logs         # Stream Docker logs
-make db-init          # Wait for postgres ready (rarely needed with --wait)
-make db-migrate       # Run Alembic migrations
-make run              # Start FastAPI app with hot reload
+make help                  # Show all targets
+make dev-up               # Start Docker services (postgres + redis)
+make dev-down             # Stop Docker services
+make dev-logs             # Stream Docker logs
+make db-init              # Wait for postgres ready (rarely needed with --wait)
+make db-migrate           # Run Alembic migrations
+make db-triggers          # Apply Postgres LISTEN/NOTIFY trigger (run once after db-migrate)
+make run                  # Start FastAPI app (hot reload off by default)
+make worker               # Start background task worker
+make worker-dev           # Start worker with auto-reload
+make task-router          # Start LISTEN/NOTIFY task router process
+make delayed-scheduler    # Start delayed scheduler runner
+make recurring-scheduler  # Start recurring scheduler runner
+make pre-deploy           # Run before every production deploy (migrations + triggers)
 ```
 
 ### APP_ENV profile selection
@@ -168,6 +178,21 @@ APP_ENV=development alembic upgrade head
 APP_ENV=development python run.py
 APP_ENV=validation python scripts/validate_bootstrap.py
 ```
+
+### Sleep mode configuration
+
+The generated app ships with Redis-backed idle sleep mode. Relevant `.env` keys:
+
+```bash
+SLEEP_MODE_ENABLED=true           # Set false to disable sleep entirely
+IDLE_SLEEP_THRESHOLD_SECONDS=600  # Seconds of inactivity before entering sleep
+```
+
+When sleeping, the HTTP layer wakes the system on any incoming request (via `SleepMiddleware`). The task router and both scheduler runners use alarm-clock sleep — zero extra DB queries during idle, wake precisely when the next job is due.
+
+### LISTEN/NOTIFY trigger
+
+The `make db-triggers` target installs the `trg_task_open` Postgres trigger that fires `pg_notify('task_open', ...)` on every INSERT or state-change to `open` on the `execution_tasks` table. The task router subscribes via `asyncpg` and wakes instantly on new work instead of polling. Re-run `make db-triggers` after any schema re-creation (`make db-migrate` on a clean database).
 
 > **Pick one mode for your repository shape.** If `application_contracts/` lives inside your app repo, use Mode B and ignore Mode A. Mode A applies only when contracts are hosted in a separate external repo.
 

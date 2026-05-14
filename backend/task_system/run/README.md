@@ -49,6 +49,45 @@ Run from `backend/task_system` so paths remain predictable.
 
 Note: generated `backend/app/<app_name>/config.py` sets `SettingsConfigDict(..., extra="ignore")` intentionally so operational env vars (for example Docker/ports/reload flags) do not break startup, Alembic, workers, or CLI commands.
 
+#### Sleep mode and LISTEN/NOTIFY
+
+The generated app supports Redis-backed idle sleep. Relevant `.env` keys written at bootstrap time:
+
+```bash
+SLEEP_MODE_ENABLED=true           # Disable by setting false
+IDLE_SLEEP_THRESHOLD_SECONDS=600  # Idle seconds before entering sleep
+```
+
+After running migrations, apply the Postgres LISTEN/NOTIFY trigger so the task router wakes immediately on new work instead of polling:
+
+```bash
+make db-triggers
+```
+
+Re-run `make db-triggers` after any schema re-creation. Makefile targets: `worker`, `worker-dev`, `worker-logs`.
+
+#### Hot reload
+
+Hot reload is **off by default** (`UVICORN_RELOAD=0`). The generated `.env.local` sets `UVICORN_RELOAD=1` for local development. Never set `UVICORN_RELOAD=1` in production.
+
+#### Production process management
+
+The generated `Procfile` at the app root lists all five processes:
+
+```
+web:                  python run.py
+worker:               python worker.py
+task-router:          python my_app/workers/task_router_process.py
+delayed-scheduler:    python my_app/workers/delayed_scheduler_runner.py
+recurring-scheduler:  python my_app/workers/recurring_scheduler_runner.py
+```
+
+Drive with `supervisord`, `honcho`, or any Procfile-compatible manager on EC2. Run before every production deploy:
+
+```bash
+make pre-deploy   # alembic upgrade head + apply_db_triggers.py
+```
+
 Generated settings also use explicit `Field(..., alias="ENV_VAR")` aliases so environment variable mapping is deterministic in Pydantic v2.
 
 Use `APP_ENV` to select one env profile when running generated apps (for example `APP_ENV=development alembic upgrade head`).
@@ -219,6 +258,19 @@ Use the same repo root as target for the system bootstrap, then point app bootst
 cd backend/task_system
 python3 run/bootstrap_backend_system.py --output-dir /path/to/new-app-root
 python3 run/bootstrap.py --app-name my_app --target /path/to/new-app-root/backend/app --phase all
+```
+
+Then inside the generated app:
+
+```bash
+cd /path/to/new-app-root/backend/app
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt -r requirements-dev.txt
+cp .env.example .env
+make dev-up
+make db-migrate
+make db-triggers   # installs trg_task_open LISTEN/NOTIFY trigger
+make run
 ```
 
 `--target` and `--output-dir` are equivalent for `run/bootstrap.py`.

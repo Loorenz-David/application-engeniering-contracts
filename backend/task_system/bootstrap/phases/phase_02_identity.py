@@ -68,7 +68,7 @@ class HistoryRecord:
         index=True,
     )
     from_value: Mapped[dict | None] = mapped_column(JSON, nullable=True)
-    to_value: Mapped[dict] = mapped_column(JSON, nullable=False)
+    to_value: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     reason: Mapped[str | None] = mapped_column(String(512), nullable=True)
 """, force=force)
 

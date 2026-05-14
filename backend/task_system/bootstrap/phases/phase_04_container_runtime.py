@@ -143,7 +143,7 @@ volumes:
 """, force=force)
 
     _write(root / "Makefile", """\
-.PHONY: dev-up dev-up-full dev-down dev-logs
+.PHONY: dev-up dev-up-full dev-down dev-logs db-create db-init db-migrate run
 
 # Hybrid mode: run app locally, infra in Docker.
 dev-up:
@@ -158,6 +158,23 @@ dev-down:
 
 dev-logs:
 \tdocker compose logs -f
+
+db-create:
+\tPYTHONPATH=. APP_ENV=development python3 -m scripts.create_db
+
+db-init:
+\tPYTHONPATH=. APP_ENV=development python3 -m scripts.create_db
+\tPYTHONPATH=. APP_ENV=development python3 -m scripts.wait_for_services
+
+db-migrate:
+\t@if [ -z "$$(ls migrations/versions/*.py 2>/dev/null)" ]; then \\
+\t\techo "[db-migrate] No migration found — generating initial schema"; \\
+\t\tAPP_ENV=development alembic revision --autogenerate -m "initial_schema"; \\
+\tfi
+\tAPP_ENV=development alembic upgrade head
+
+run:
+\tAPP_ENV=development python3 run.py
 """, force=force)
 
     _write(root / "README.md", f"""\

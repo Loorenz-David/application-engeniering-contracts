@@ -79,7 +79,26 @@ class Record(IdentityMixin, Base):
 - All foreign key columns are `nullable=False` unless there is an explicit domain reason for nullability.
 - Every addressable table uses `IdentityMixin`; `client_id` is the prefixed ULID primary key. See [40_identity.md](40_identity.md).
 - Foreign key columns use `String(64)` and reference `<table>.client_id`. Keep semantic FK column names (`workspace_id`, `user_id`, `record_id`) even though they store `client_id` values.
-- Indexes go on columns used in `WHERE` clauses. Note the index in a migration comment if non-obvious.
+
+**Mandatory index rules (apply at table creation, not after observing slowness):**
+- Every FK column must have `index=True`. Postgres does not auto-index FK columns and they appear in virtually every `JOIN` and `WHERE`.
+- `workspace_id` must be indexed on every domain table — it is the mandatory first filter in all multi-tenant list queries.
+- `created_at` must be indexed on tables where list queries sort by time.
+- State/status enum columns on high-traffic tables that filter by state must be indexed.
+
+**Composite indexes** for queries that always filter on two columns together:
+
+```python
+from sqlalchemy import Index
+
+class Case(IdentityMixin, Base):
+    __tablename__ = "cases"
+    __table_args__ = (
+        Index("ix_cases_workspace_state", "workspace_id", "state"),
+    )
+```
+
+Index naming: `ix_{table}_{columns}` — e.g., `ix_cases_workspace_state`. Never add indexes speculatively on columns that do not appear in queries — indexes have a write cost on every `INSERT` and `UPDATE`.
 
 **Relationship rules:**
 - Default relationship loading is `lazy="raise"` — not `"select"`. In async SQLAlchemy, lazy loading raises `MissingGreenlet` at runtime if accessed outside an active session; `lazy="raise"` makes this fail at development time with a clear error instead of silently in production.

@@ -160,8 +160,11 @@ Minimum read set for a single, scoped task. For compound tasks, combine rows.
 |---|---|---|
 | Add pagination to a query | [07_queries.md](07_queries.md) | 22 |
 | Add search or filtering to a query | [07_queries.md](07_queries.md) | 22 |
-| Fix N+1 queries | [22_performance.md](22_performance.md) | 07 |
-| Add Redis caching | [12_infra_redis.md](12_infra_redis.md) | 22 |
+| Fix N+1 queries | [22_performance.md](22_performance.md) | 07, 15 |
+| Add query result caching | [07_queries.md](07_queries.md) | 12 |
+| Add Redis caching (non-query) | [12_infra_redis.md](12_infra_redis.md) | 22 |
+| Add rate limiting to an endpoint | [18_security.md](18_security.md) | 12 |
+| Add request timeout enforcement | [02_app_factory.md](02_app_factory.md) | — |
 | Add data export (CSV, JSON) | [27_cli_scripts.md](27_cli_scripts.md) | 07, 16 |
 
 ### Real-time & events
@@ -464,7 +467,7 @@ These are invariants. They cannot be relaxed. If a task seems to require breakin
 | # | File | Covers |
 |---|---|---|
 | 06 | [06_commands.md](06_commands.md) | Write operations — structure, transaction boundaries, event emission |
-| 07 | [07_queries.md](07_queries.md) | Read operations — structure, pagination, serialization |
+| 07 | [07_queries.md](07_queries.md) | Read operations — structure, pagination, serialization, query result caching |
 | 08 | [08_domain.md](08_domain.md) | Pure domain logic — guards, state machines, calculations |
 | 38 | [38_identity_resolution.md](38_identity_resolution.md) | `client_id` lookup with workspace/soft-delete-safe resolution |
 | 39 | [39_work_context.md](39_work_context.md) | `WorkContext` for complex writes — touched entities, cascading changes, response assembly |
@@ -482,7 +485,7 @@ These are invariants. They cannot be relaxed. If a task seems to require breakin
 | 11 | [11_infra_events.md](11_infra_events.md) | Event bus, outbox pattern, batch events, schema versioning, dead letters |
 | 12 | [12_infra_redis.md](12_infra_redis.md) | Redis — connection, key conventions, TTL rules |
 | 13 | [13_sockets.md](13_sockets.md) | Socket.IO — single, batch, and broadcast real-time push |
-| 16 | [16_background_jobs.md](16_background_jobs.md) | RQ workers, queues, retry policies, job idempotency |
+| 16 | [16_background_jobs.md](16_background_jobs.md) | Async task workers, queues, retry + jitter, timeouts, observability, stale recovery, NOTIFY opt-in |
 | 19 | [19_integrations.md](19_integrations.md) | Adapter pattern, credentials, webhooks, graceful degradation |
 
 ### Auth & multi-tenancy
@@ -509,7 +512,7 @@ These are invariants. They cannot be relaxed. If a task seems to require breakin
 | 29 | [29_feature_workflow.md](29_feature_workflow.md) | Step-by-step playbook — new domain, new endpoint, new application; definition of done |
 | 30 | [30_migrations.md](30_migrations.md) | Alembic — zero-downtime patterns, NOT NULL sequence, concurrent indexes, enum types |
 | 33 | [33_deployment.md](33_deployment.md) | Pre-deploy checklist, rollback procedure, feature flags, smoke tests |
-| 34 | [34_file_storage.md](34_file_storage.md) | Presigned URL upload/download, MIME validation, orphan cleanup, storage adapter |
+| 34 | [34_file_storage.md](34_file_storage.md) | Presigned URL upload/download, multipart upload, MIME validation, orphan cleanup, storage adapter |
 | 37 | [37_scheduled_jobs.md](37_scheduled_jobs.md) | Time-based scheduled jobs — scheduler setup, batching, idempotency, job catalog |
 
 ### Operational runtime contracts

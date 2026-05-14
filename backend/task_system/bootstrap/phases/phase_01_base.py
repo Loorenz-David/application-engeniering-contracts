@@ -39,10 +39,14 @@ def _phase1(root: Path, a: str, force: bool) -> None:
 
     # ── app factory ──────────────────────────────────────────────────────────
     _write(root / a / "__init__.py", f"""\
+import logging
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from {a}.config import settings
+
+_startup_logger = logging.getLogger("{a}.startup")
 
 
 _REQUIRED_SETTINGS = ["secret_key", "jwt_secret_key", "database_url", "redis_url"]
@@ -65,13 +69,28 @@ def _register_routers(app: FastAPI) -> None:
 async def lifespan(app: FastAPI):
     from {a}.models.database import init_db, close_db
     await init_db()
+    _startup_logger.info(
+        "startup | env=%s database_url=%s redis_url=%s "
+        "db_pool_size=%d db_max_overflow=%d db_pool_recycle=%d",
+        settings.environment,
+        settings.database_url,
+        settings.redis_url,
+        settings.db_pool_size,
+        settings.db_max_overflow,
+        settings.db_pool_recycle,
+    )
     yield
     await close_db()
 
 
 def create_app() -> FastAPI:
+    from {a}.routers.middleware.no_cache import NoCacheMiddleware
+    from {a}.routers.middleware.sleep import SleepMiddleware
+    from {a}.routers.middleware.timeout import TimeoutMiddleware
+
     app = FastAPI(lifespan=lifespan)
 
+    # Registered last → executes first on request
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.frontend_origins,
@@ -79,6 +98,14 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["Content-Type", "Authorization"],
     )
+    # Gzip: compresses responses > 1 KB
+    app.add_middleware(GZipMiddleware, minimum_size=1000)
+    # No-cache: Cache-Control: no-store on /api/ responses
+    app.add_middleware(NoCacheMiddleware)
+    # Sleep: touches ActivityTracker on every request — wakes the app if sleeping
+    app.add_middleware(SleepMiddleware)
+    # Timeout: hard deadline, returns 504 on breach
+    app.add_middleware(TimeoutMiddleware)
 
     _register_routers(app)
     _validate_config()
@@ -117,6 +144,16 @@ class Settings(BaseSettings):
     redis_url: str | None = Field(default=None, alias="REDIS_URL")
     redis_key_prefix: str = Field(default="{a}", alias="REDIS_KEY_PREFIX")
 
+    # Database pool
+    db_pool_size: int = Field(default=10, alias="DB_POOL_SIZE")
+    db_max_overflow: int = Field(default=20, alias="DB_MAX_OVERFLOW")
+    db_pool_recycle: int = Field(default=1800, alias="DB_POOL_RECYCLE")
+
+    # Request / Performance
+    request_timeout_seconds: int = Field(default=30, alias="REQUEST_TIMEOUT_SECONDS")
+    slow_query_threshold_ms: int = Field(default=500, alias="SLOW_QUERY_THRESHOLD_MS")
+    presence_debounce_seconds: int = Field(default=30, alias="PRESENCE_DEBOUNCE_SECONDS")
+
     # CORS
     frontend_origins: Annotated[list[str], NoDecode] = Field(
         default=["http://localhost:5173"],
@@ -138,6 +175,12 @@ class Settings(BaseSettings):
     aws_access_key_id: str | None = Field(default=None, alias="AWS_ACCESS_KEY_ID")
     aws_secret_access_key: str | None = Field(default=None, alias="AWS_SECRET_ACCESS_KEY")
     local_storage_path: str = Field(default="/tmp/{a}-uploads", alias="LOCAL_STORAGE_PATH")
+    local_storage_host: str = Field(default="http://localhost:{app_port}", alias="LOCAL_STORAGE_HOST")
+
+    # Idle sleep mode — see 22_performance.md
+    sleep_mode_enabled: bool = Field(default=True, alias="SLEEP_MODE_ENABLED")
+    idle_sleep_threshold_seconds: int = Field(default=600, alias="IDLE_SLEEP_THRESHOLD_SECONDS")
+
 
     model_config = SettingsConfigDict(
         # Load deterministic env profile selected by APP_ENV.
@@ -188,8 +231,11 @@ from {a}.models.base.base import Base  # noqa: F401
 """, force=force)
 
     _write(root / a / "models" / "database.py", f"""\
+import logging
+import time
 from typing import AsyncIterator
 
+from sqlalchemy import event
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -202,15 +248,32 @@ from {a}.config import settings
 _engine: AsyncEngine | None = None
 _session_factory: async_sessionmaker | None = None
 
+_perf_logger = logging.getLogger("sqlalchemy.perf")
+
 
 async def init_db() -> None:
     global _engine, _session_factory
     _engine = create_async_engine(
         settings.database_url,
         connect_args={{"server_settings": {{"timezone": "UTC"}}, "timeout": 5}},
+        pool_size=settings.db_pool_size,
+        max_overflow=settings.db_max_overflow,
+        pool_recycle=settings.db_pool_recycle,
+        pool_timeout=30,
         pool_pre_ping=True,
         echo=settings.environment == "development",
     )
+
+    @event.listens_for(_engine.sync_engine, "before_cursor_execute")
+    def _before(conn, cursor, statement, parameters, context, executemany):
+        conn.info.setdefault("_query_start", time.monotonic())
+
+    @event.listens_for(_engine.sync_engine, "after_cursor_execute")
+    def _after(conn, cursor, statement, parameters, context, executemany):
+        elapsed_ms = (time.monotonic() - conn.info.pop("_query_start", time.monotonic())) * 1000
+        if elapsed_ms >= settings.slow_query_threshold_ms:
+            _perf_logger.warning("slow_query | elapsed_ms=%.1f | %s", elapsed_ms, statement[:200])
+
     _session_factory = async_sessionmaker(
         _engine,
         class_=AsyncSession,
@@ -373,6 +436,154 @@ async def health_check() -> JSONResponse:
     return JSONResponse(content=status, status_code=200 if ok else 503)
 """, force=force)
 
+    # ── middleware helpers ────────────────────────────────────────────────────
+    _touch(root / a / "routers" / "middleware" / "__init__.py", force=force)
+
+    _write(root / a / "routers" / "middleware" / "no_cache.py", """\
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
+
+
+class NoCacheMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        response = await call_next(request)
+        if request.url.path.startswith("/api/"):
+            response.headers["Cache-Control"] = "no-store"
+        return response
+""", force=force)
+
+    _write(root / a / "routers" / "middleware" / "timeout.py", f"""\
+import asyncio
+
+from fastapi.responses import JSONResponse
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
+
+from {a}.config import settings
+
+
+class TimeoutMiddleware(BaseHTTPMiddleware):
+    def __init__(self, app, timeout: int = None):
+        super().__init__(app)
+        self.timeout = timeout or settings.request_timeout_seconds
+
+    async def dispatch(self, request: Request, call_next):
+        try:
+            return await asyncio.wait_for(call_next(request), timeout=self.timeout)
+        except asyncio.TimeoutError:
+            return JSONResponse({{"detail": "Request timed out."}}, status_code=504)
+""", force=force)
+
+    _write(root / a / "routers" / "middleware" / "sleep.py", f"""\
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
+
+from {a}.services.infra.sleep.activity_tracker import ActivityTracker
+
+
+class SleepMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        ActivityTracker.touch()
+        return await call_next(request)
+""", force=force)
+
+    # ── Sleep mode (ActivityTracker) ──────────────────────────────────────────
+    _touch(root / a / "services" / "infra" / "sleep" / "__init__.py", force=force)
+
+    _write(root / a / "services" / "infra" / "sleep" / "activity_tracker.py", f"""\
+import logging
+import time
+
+from {a}.config import settings
+from {a}.services.infra.redis import get_redis_client
+
+logger = logging.getLogger(__name__)
+
+_SLEEP_KEY    = "{{prefix}}:system:sleeping"
+_ACTIVITY_KEY = "{{prefix}}:system:last_activity"
+_ACTIVITY_TTL = 86400  # 24h — prevents stale key if app never restarts
+
+
+def _key(k: str) -> str:
+    return k.replace("{{prefix}}", settings.redis_key_prefix)
+
+
+class ActivityTracker:
+    \"\"\"Redis-backed sleep/wake state shared across all processes.\"\"\"
+
+    @classmethod
+    def touch(cls) -> None:
+        r = get_redis_client(settings.redis_url)
+        was_sleeping = r.exists(_key(_SLEEP_KEY))
+        r.delete(_key(_SLEEP_KEY))
+        r.set(_key(_ACTIVITY_KEY), str(time.time()), ex=_ACTIVITY_TTL)
+        if was_sleeping:
+            logger.info("app_wake | activity detected")
+
+    @classmethod
+    def is_sleeping(cls) -> bool:
+        return bool(get_redis_client(settings.redis_url).exists(_key(_SLEEP_KEY)))
+
+    @classmethod
+    def enter_sleep(cls) -> None:
+        get_redis_client(settings.redis_url).set(_key(_SLEEP_KEY), "1")
+        logger.info("app_sleep | entering sleep mode after idle")
+
+    @classmethod
+    def idle_seconds(cls) -> float:
+        val = get_redis_client(settings.redis_url).get(_key(_ACTIVITY_KEY))
+        return 0.0 if val is None else time.time() - float(val)
+""", force=force)
+
+    # ── async Redis client ────────────────────────────────────────────────────
+    # Note: services/infra/redis/__init__.py is owned by phase_05 (defines get_redis_client).
+    # Only write async_client.py here — the _write call creates the redis/ directory.
+    _write(root / a / "services" / "infra" / "redis" / "async_client.py", f"""\
+from redis.asyncio import Redis as AsyncRedis
+
+from {a}.config import settings
+
+_async_client: AsyncRedis | None = None
+
+
+def get_async_redis() -> AsyncRedis:
+    global _async_client
+    if _async_client is None:
+        _async_client = AsyncRedis.from_url(settings.redis_url, decode_responses=True)
+    return _async_client
+""", force=force)
+
+    # ── query result cache ────────────────────────────────────────────────────
+    _touch(root / a / "services" / "infra" / "cache" / "__init__.py", force=force)
+
+    _write(root / a / "services" / "infra" / "cache" / "query_cache.py", f"""\
+import json
+
+from {a}.services.infra.redis.async_client import get_async_redis
+
+_DEFAULT_TTL = 300
+
+
+async def get_cached(cache_key: str) -> dict | None:
+    raw = await get_async_redis().get(cache_key)
+    return json.loads(raw) if raw else None
+
+
+async def set_cached(cache_key: str, data: dict, ttl: int = _DEFAULT_TTL) -> None:
+    await get_async_redis().set(cache_key, json.dumps(data), ex=ttl)
+
+
+async def invalidate(cache_key: str) -> None:
+    await get_async_redis().delete(cache_key)
+
+
+async def invalidate_prefix(pattern: str) -> None:
+    redis = get_async_redis()
+    keys = await redis.keys(pattern)
+    if keys:
+        await redis.delete(*keys)
+""", force=force)
+
     # ── empty directory stubs ─────────────────────────────────────────────────
     for stub in [
         root / a / "domain" / "__init__.py",
@@ -386,6 +597,7 @@ async def health_check() -> JSONResponse:
 
     # ── project root files ────────────────────────────────────────────────────
     _write(root / "run.py", f"""\
+import socket
 import uvicorn
 import asyncio
 import os
@@ -395,14 +607,34 @@ load_dotenv()  # Load .env before reading PORT or any other env var
 
 from scripts.wait_for_services import wait_for_services
 
+
+def _find_free_port(preferred: int) -> int:
+    for port in range(preferred, preferred + 20):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                s.bind(("0.0.0.0", port))
+                return port
+            except OSError:
+                continue
+    raise RuntimeError(
+        f"No free port found in range {{preferred}}–{{preferred + 19}}. Free a port and retry."
+    )
+
+
 if __name__ == "__main__":
     asyncio.run(wait_for_services())
+    requested_port = int(os.getenv("PORT", "{app_port}"))
+    port = _find_free_port(requested_port)
+    if port != requested_port:
+        print(f"[run] Port {{requested_port}} is in use — using {{port}} instead.")
+        print(f"[run] Update PORT={{port}} in .env to make this permanent.")
     uvicorn.run(
         "{a}:create_app",
         factory=True,
         host="0.0.0.0",
-        port=int(os.getenv("PORT", "{app_port}")),
-        reload=os.getenv("UVICORN_RELOAD", "1") != "0",
+        port=port,
+        reload=os.getenv("UVICORN_RELOAD", "0") == "1",
     )
 """, force=force)
 
@@ -425,6 +657,8 @@ typer==0.15.3
 click==8.1.8
 python-ulid==3.0.0
 pywebpush==2.0.0
+boto3==1.35.0
+cachetools==5.5.0
 """, force=force)
 
     _write(root / "requirements-dev.txt", """\
@@ -466,6 +700,29 @@ ENVIRONMENT=development
 # Optional settings profile selector used by config.py.
 # Supported values: development | testing | validation | production
 APP_ENV=development
+
+# Database connection pool (tune for load; defaults shown are production-safe)
+DB_POOL_SIZE=20
+DB_MAX_OVERFLOW=20
+DB_POOL_RECYCLE=1800
+
+# Idle sleep mode — disable for dedicated worker-only deployments
+SLEEP_MODE_ENABLED=true
+IDLE_SLEEP_THRESHOLD_SECONDS=600
+
+# Storage — options: local | localstack | s3
+# local:      files served through the app (development only, no cloud dependency)
+# localstack: real S3 API against a local docker service (requires STORAGE_BUCKET)
+# s3:         AWS S3 production (requires STORAGE_BUCKET + AWS credentials)
+STORAGE_PROVIDER=local
+LOCAL_STORAGE_PATH=/tmp/{a}-uploads
+LOCAL_STORAGE_HOST=http://localhost:{app_port}
+# Required for localstack and s3 — leave blank for local
+STORAGE_BUCKET=
+STORAGE_REGION=us-east-1
+# STORAGE_ENDPOINT_URL=http://localhost:4566  # localstack only
+# AWS_ACCESS_KEY_ID=
+# AWS_SECRET_ACCESS_KEY=
 """, force=force)
 
     _write(root / ".env.local", f"""\
@@ -475,6 +732,12 @@ REDIS_URL=redis://127.0.0.1:{redis_port}/0
 REDIS_KEY_PREFIX={a}_local
 SECRET_KEY=local-secret
 JWT_SECRET_KEY=local-jwt-secret
+DB_POOL_SIZE=20
+DB_MAX_OVERFLOW=20
+DB_POOL_RECYCLE=1800
+SLEEP_MODE_ENABLED=true
+IDLE_SLEEP_THRESHOLD_SECONDS=600
+UVICORN_RELOAD=1
 """, force=force)
 
     _write(root / ".env.testing", f"""\
@@ -484,6 +747,7 @@ REDIS_URL=redis://127.0.0.1:6380/1
 REDIS_KEY_PREFIX={a}_test
 SECRET_KEY=testing-secret
 JWT_SECRET_KEY=testing-jwt-secret
+SLEEP_MODE_ENABLED=false
 """, force=force)
 
     _write(root / ".env.validation", f"""\
@@ -685,6 +949,7 @@ services:
 
   redis:
     image: redis:7
+    command: redis-server --maxmemory 512mb --maxmemory-policy allkeys-lru
     ports:
       - "${{REDIS_PORT:-{redis_port}}}:6379"
     healthcheck:
@@ -701,16 +966,18 @@ volumes:
 """, force=force)
 
     _write(root / "Makefile", """\
-.PHONY: dev-up dev-down dev-logs db-init db-migrate run bootstrap-local help
+.PHONY: dev-up dev-down dev-logs db-create db-init db-migrate run bootstrap-local help
 
 help:
 	@echo "Development targets:"
 	@echo "  make dev-up       - Start Docker services (postgres + redis)"
 	@echo "  make dev-logs     - Stream Docker logs"
 	@echo "  make dev-down     - Stop Docker services"
-	@echo "  make db-init      - Wait for database to be ready"
+	@echo "  make db-create    - Create the app database if it does not exist"
+	@echo "  make db-init      - Create database and wait for all services to be ready"
 	@echo "  make db-migrate   - Run Alembic migrations"
-	@echo "  make bootstrap-local - Full local init (venv, deps, env, docker, migrations)"
+	@echo "  make db-triggers  - Apply Postgres LISTEN/NOTIFY trigger (run after db-migrate)"
+	@echo "  make bootstrap-local - Full local init (venv, deps, env, docker, db, migrations)"
 	@echo "  make run          - Start the FastAPI app with auto-reload"
 	@echo ""
 	@echo "Full workflow:"
@@ -726,11 +993,22 @@ dev-down:
 dev-logs:
 	docker compose logs -f
 
+db-create:
+	PYTHONPATH=. APP_ENV=development python -m scripts.create_db
+
 db-init:
+	PYTHONPATH=. APP_ENV=development python -m scripts.create_db
 	PYTHONPATH=. APP_ENV=development python -m scripts.wait_for_services
 
 db-migrate:
+	@if [ -z "$$(ls migrations/versions/*.py 2>/dev/null)" ]; then \
+		echo "[db-migrate] No migration found — generating initial schema"; \
+		APP_ENV=development alembic revision --autogenerate -m "initial_schema"; \
+	fi
 	APP_ENV=development alembic upgrade head
+
+db-triggers:
+	PYTHONPATH=. APP_ENV=development python scripts/apply_db_triggers.py
 
 run:
 	APP_ENV=development python run.py
@@ -764,21 +1042,28 @@ Copy the example environment before running app commands:
 cp .env.example .env
 ```
 
-Run migrations after the services are healthy:
+Create the application database (if it doesn't exist) and wait for all
+services to be ready:
 
 ```bash
-APP_ENV=development alembic upgrade head
+make db-init
+```
+
+Run migrations:
+
+```bash
+make db-migrate
 ```
 
 Start the FastAPI app:
 
 ```bash
-python run.py
+make run
 ```
 
-The app waits for PostgreSQL and Redis before Uvicorn starts. Startup fails if
-`DATABASE_URL` is missing, Redis is unreachable, or the configured database is
-not reachable.
+The app waits for PostgreSQL and Redis before Uvicorn starts. If the configured
+`PORT` is already in use, the server automatically selects the next available port
+and prints a hint to update `.env`.
 
 ## One-Command Local Bootstrap
 
@@ -846,6 +1131,9 @@ fi
 log "Starting docker services"
 make dev-up
 
+log "Creating database if missing"
+PYTHONPATH=. APP_ENV=development python -m scripts.create_db
+
 log "Waiting for services"
 PYTHONPATH=. APP_ENV=development python -m scripts.wait_for_services
 
@@ -858,6 +1146,9 @@ fi
 
 log "Applying migrations"
 APP_ENV=development alembic upgrade head
+
+log "Applying Postgres triggers"
+PYTHONPATH=. APP_ENV=development python scripts/apply_db_triggers.py
 
 log "Done. Start API with: make run"
 """, force=force)
@@ -1097,5 +1388,57 @@ def main() -> None:
 if __name__ == "__main__":
     main()
 """.replace("__APP_NAME__", a), force=force)
+
+    _write(root / "scripts" / "create_db.py", f"""\
+import asyncio
+import re
+import time
+
+import asyncpg
+
+from {a}.config import settings
+
+
+def _admin_dsn(database_url: str) -> tuple[str, str]:
+    \"\"\"Return (admin_dsn, db_name) derived from DATABASE_URL.\"\"\"
+    dsn = re.sub(r"^postgresql\\+asyncpg://", "postgresql://", database_url)
+    match = re.match(r"(.*)/([^/?]+)(\\?.*)?$", dsn)
+    if not match:
+        raise RuntimeError(f"Cannot parse DATABASE_URL: {{database_url!r}}")
+    return match.group(1) + "/postgres", match.group(2)
+
+
+async def create_db_if_missing(timeout_seconds: int = 60, interval: float = 1.0) -> None:
+    admin_dsn, db_name = _admin_dsn(settings.database_url)
+    deadline = time.monotonic() + timeout_seconds
+    last_error: Exception | None = None
+
+    while time.monotonic() < deadline:
+        try:
+            conn = await asyncpg.connect(admin_dsn, timeout=5)
+            try:
+                exists = await conn.fetchval(
+                    "SELECT 1 FROM pg_database WHERE datname = $1", db_name
+                )
+                if not exists:
+                    await conn.execute(f'CREATE DATABASE "{{db_name}}"')
+                    print(f"[create-db] Created database: {{db_name}}")
+                else:
+                    print(f"[create-db] Database already exists: {{db_name}}")
+                return
+            finally:
+                await conn.close()
+        except Exception as exc:
+            last_error = exc
+            await asyncio.sleep(interval)
+
+    raise RuntimeError(
+        f"Could not create database '{{db_name}}' after {{timeout_seconds}}s: {{last_error}}"
+    )
+
+
+if __name__ == "__main__":
+    asyncio.run(create_db_if_missing())
+""", force=force)
 
     _touch(root / "scripts" / ".gitkeep", force=force)

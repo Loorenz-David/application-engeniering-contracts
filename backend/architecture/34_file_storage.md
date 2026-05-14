@@ -530,7 +530,7 @@ class S3Client(StorageClient):
         self._client.delete_object(Bucket=self._bucket, Key=key)
 ```
 
-`endpoint_url` is `None` in production (boto3 resolves the AWS regional endpoint automatically). Pass `endpoint_url` to point the same client at LocalStack or MinIO for local testing with full S3 fidelity.
+For production S3, always derive and pass `endpoint_url` explicitly as `https://s3.{region}.amazonaws.com`. Omitting it causes boto3 to sign against the global endpoint (`s3.amazonaws.com`), which then issues a 307 redirect to the regional endpoint — pre-signed PUT requests fail on redirect because the signature is bound to the original URL and the request body is not forwarded. Pass `endpoint_url` to point the same client at LocalStack or MinIO for local testing with full S3 fidelity.
 
 ---
 
@@ -588,11 +588,13 @@ def get_storage_client() -> StorageClient:
     provider = settings.storage_provider
 
     if provider == "s3":
+        region = settings.storage_region or "us-east-1"
         return S3Client(
             bucket=settings.storage_bucket,
-            region=settings.storage_region,
+            region=region,
             access_key=settings.aws_access_key_id,
             secret_key=settings.aws_secret_access_key,
+            endpoint_url=settings.storage_endpoint_url or f"https://s3.{region}.amazonaws.com",
         )
 
     # S3-compatible endpoint — works with LocalStack and MinIO out of the box
@@ -639,6 +641,92 @@ In `LocalStack` mode the S3 bucket must be created first:
 ```bash
 aws --endpoint-url=http://localhost:4566 s3 mb s3://my-app-files
 ```
+
+---
+
+## Multipart upload (files > 5 MB)
+
+S3's single `PUT` limit is 5 GB, but for files above 5 MB multipart upload gives better reliability (each part retries independently) and enables parallel part uploads from the client.
+
+**Extend `StorageClient` ABC:**
+
+```python
+# services/infra/storage/base.py
+
+@abstractmethod
+def initiate_multipart_upload(self, key: str, content_type: str) -> str:
+    """Returns the upload_id for the multipart session."""
+
+@abstractmethod
+def generate_part_presigned_url(
+    self, key: str, upload_id: str, part_number: int, expires_in: int
+) -> str:
+    """Returns a presigned PUT URL for one part. part_number is 1-indexed."""
+
+@abstractmethod
+def complete_multipart_upload(
+    self, key: str, upload_id: str, parts: list[dict]
+) -> None:
+    """parts: [{"PartNumber": 1, "ETag": "abc..."}, ...]"""
+
+@abstractmethod
+def abort_multipart_upload(self, key: str, upload_id: str) -> None:
+    """Called when the client abandons the upload or a confirm timeout fires."""
+```
+
+**`S3Client` implementation:**
+
+```python
+# services/infra/storage/s3_client.py
+
+def initiate_multipart_upload(self, key: str, content_type: str) -> str:
+    resp = self._client.create_multipart_upload(
+        Bucket=self._bucket, Key=key, ContentType=content_type
+    )
+    return resp["UploadId"]
+
+def generate_part_presigned_url(
+    self, key: str, upload_id: str, part_number: int, expires_in: int
+) -> str:
+    return self._client.generate_presigned_url(
+        "upload_part",
+        Params={
+            "Bucket":     self._bucket,
+            "Key":        key,
+            "UploadId":   upload_id,
+            "PartNumber": part_number,
+        },
+        ExpiresIn=expires_in,
+    )
+
+def complete_multipart_upload(self, key: str, upload_id: str, parts: list[dict]) -> None:
+    self._client.complete_multipart_upload(
+        Bucket=self._bucket,
+        Key=key,
+        UploadId=upload_id,
+        MultipartUpload={"Parts": parts},
+    )
+
+def abort_multipart_upload(self, key: str, upload_id: str) -> None:
+    self._client.abort_multipart_upload(
+        Bucket=self._bucket, Key=key, UploadId=upload_id
+    )
+```
+
+**Flow:**
+
+```
+1. Client: POST /files/multipart/initiate  → { upload_id, storage_key, part_urls: [...] }
+2. Client: PUT each part URL directly to S3  → collects ETag per part
+3. Client: POST /files/multipart/complete   → { storage_key, upload_id, parts: [{PartNumber, ETag}] }
+4. API: calls complete_multipart_upload + marks PendingUpload as CONFIRMED
+```
+
+**Rules:**
+- Minimum part size is 5 MB (S3 requirement) except for the last part. Validate `content_length` of each part on `complete` before calling S3.
+- Store `upload_id` in `PendingUpload` alongside `storage_key` — required to `abort_multipart_upload` during orphan cleanup.
+- Orphan cleanup (see above) must call `abort_multipart_upload` for `PENDING` rows that have a non-null `upload_id` and are past `expires_at`. Unaborted multipart uploads incur S3 storage charges for each uploaded part.
+- Use multipart for files > 5 MB. Use single `PUT` for files ≤ 5 MB — multipart adds round-trips with no benefit.
 
 ---
 
