@@ -368,13 +368,11 @@ if [ -d "$CANONICAL_TESTS_DIR" ]; then
   cp -r "$CANONICAL_TESTS_DIR/bootstrap_tests" "$TESTS_DEST_DIR/"
   mkdir -p "$TESTS_DEST_DIR/test_summary"
   # Replace the canonical my_app placeholder with the real module slug.
-  # Use -exec rather than pipe-to-while so $APP_SLUG is in scope.
+  # grep -rl locates every file containing the token; xargs sed rewrites them.
   if [[ "$OSTYPE" == "darwin"* ]]; then
-    find "$TESTS_DEST_DIR" -type f \( -name "*.sh" -o -name "*.py" -o -name "*.md" \) \
-      -exec sed -i '' "s/my_app/$APP_SLUG/g" {} +
+    grep -rl "my_app" "$TESTS_DEST_DIR" | xargs sed -i '' "s/my_app/$APP_SLUG/g"
   else
-    find "$TESTS_DEST_DIR" -type f \( -name "*.sh" -o -name "*.py" -o -name "*.md" \) \
-      -exec sed -i "s/my_app/$APP_SLUG/g" {} +
+    grep -rl "my_app" "$TESTS_DEST_DIR" | xargs sed -i "s/my_app/$APP_SLUG/g"
   fi
   echo "  ✓ Test suite installed at $TESTS_DEST_DIR (my_app → $APP_SLUG)"
 else
