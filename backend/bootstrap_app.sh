@@ -82,10 +82,19 @@ if [ -z "$APP_DISPLAY_NAME" ]; then
   exit 1
 fi
 
+# Derive Python-safe module slug from display name
+# e.g. "Beyo Manager" → "beyo_manager", "beyo-manager" → "beyo_manager"
+APP_SLUG="$(echo "$APP_DISPLAY_NAME" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/_/g' | sed 's/_\{2,\}/_/g; s/^_//; s/_$//')"
+if [ -z "$APP_SLUG" ]; then
+  echo "✗ Could not derive a valid module name from: $APP_DISPLAY_NAME"
+  exit 1
+fi
+
 echo ""
 echo "────────────────────────────────────────────────────────────"
 echo "  Output  : $OUTPUT_DIR"
 echo "  App name: $APP_DISPLAY_NAME"
+echo "  Module  : $APP_SLUG"
 echo "────────────────────────────────────────────────────────────"
 echo ""
 
@@ -145,10 +154,10 @@ echo "[3/9] Generating app from contract phases..."
 if [ -f "$APP_DIR/app.py" ] || [ -f "$APP_DIR/main.py" ]; then
   echo "  ○ App already bootstrapped (app.py / main.py exists)"
 else
-  echo "  → Running bootstrap.py (app-name: my_app)..."
+  echo "  → Running bootstrap.py (app-name: $APP_SLUG)..."
   cd "$TASK_SYSTEM_DIR"
   python3 run/bootstrap.py \
-    --app-name my_app \
+    --app-name "$APP_SLUG" \
     --target "$APP_DIR" \
     --phase all \
     --force
@@ -257,6 +266,41 @@ else
   echo "APP_NAME=$APP_DISPLAY_NAME" >> "$APP_DIR/.env"
   echo "  ✓ APP_NAME=$APP_DISPLAY_NAME written to .env"
 fi
+
+# Update database name in DATABASE_URL
+if grep -q "^DATABASE_URL=" "$APP_DIR/.env" 2>/dev/null; then
+  if [[ "$OSTYPE" == "darwin"* ]]; then
+    sed -i '' "s|^DATABASE_URL=\(.*\)/[a-z_][a-z0-9_]*$|DATABASE_URL=\1/$APP_SLUG|" "$APP_DIR/.env"
+  else
+    sed -i "s|^DATABASE_URL=\(.*\)/[a-z_][a-z0-9_]*$|DATABASE_URL=\1/$APP_SLUG|" "$APP_DIR/.env"
+  fi
+  echo "  ✓ DATABASE_URL db name set to: $APP_SLUG"
+fi
+
+# Update REDIS_KEY_PREFIX
+if grep -q "^REDIS_KEY_PREFIX=" "$APP_DIR/.env" 2>/dev/null; then
+  if [[ "$OSTYPE" == "darwin"* ]]; then
+    sed -i '' "s|^REDIS_KEY_PREFIX=.*|REDIS_KEY_PREFIX=$APP_SLUG|" "$APP_DIR/.env"
+  else
+    sed -i "s|^REDIS_KEY_PREFIX=.*|REDIS_KEY_PREFIX=$APP_SLUG|" "$APP_DIR/.env"
+  fi
+  echo "  ✓ REDIS_KEY_PREFIX set to: $APP_SLUG"
+else
+  echo "REDIS_KEY_PREFIX=$APP_SLUG" >> "$APP_DIR/.env"
+  echo "  ✓ REDIS_KEY_PREFIX=$APP_SLUG written to .env"
+fi
+
+# Write APP_MODULE so tests and tooling can read the module name without guessing
+if grep -q "^APP_MODULE=" "$APP_DIR/.env" 2>/dev/null; then
+  if [[ "$OSTYPE" == "darwin"* ]]; then
+    sed -i '' "s|^APP_MODULE=.*|APP_MODULE=$APP_SLUG|" "$APP_DIR/.env"
+  else
+    sed -i "s|^APP_MODULE=.*|APP_MODULE=$APP_SLUG|" "$APP_DIR/.env"
+  fi
+else
+  echo "APP_MODULE=$APP_SLUG" >> "$APP_DIR/.env"
+fi
+echo "  ✓ APP_MODULE=$APP_SLUG written to .env"
 echo ""
 
 # ============================================================================
@@ -323,7 +367,15 @@ if [ -d "$CANONICAL_TESTS_DIR" ]; then
   mkdir -p "$TESTS_DEST_DIR"
   cp -r "$CANONICAL_TESTS_DIR/bootstrap_tests" "$TESTS_DEST_DIR/"
   mkdir -p "$TESTS_DEST_DIR/test_summary"
-  echo "  ✓ Test suite installed at $TESTS_DEST_DIR"
+  # Replace the canonical my_app placeholder with the real module slug
+  find "$TESTS_DEST_DIR" -type f \( -name "*.sh" -o -name "*.py" -o -name "*.md" \) | while IFS= read -r f; do
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+      sed -i '' "s/my_app/$APP_SLUG/g" "$f"
+    else
+      sed -i "s/my_app/$APP_SLUG/g" "$f"
+    fi
+  done
+  echo "  ✓ Test suite installed at $TESTS_DEST_DIR (my_app → $APP_SLUG)"
 else
   echo "  ⚠ Canonical tests not found at $CANONICAL_TESTS_DIR — skipping"
 fi
@@ -372,7 +424,7 @@ echo "╚═══════════════════════�
 echo ""
 echo "  Project    : $OUTPUT_DIR"
 echo "  App name   : $APP_DISPLAY_NAME"
-echo "  App module : my_app  (always the Python package name)"
+echo "  App module : $APP_SLUG"
 echo "  App dir    : $APP_DIR"
 echo "  Tests dir  : $TESTS_DEST_DIR/bootstrap_tests"
 echo ""
