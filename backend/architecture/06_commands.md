@@ -30,6 +30,52 @@ services/commands/<domain>/
 
 ---
 
+## Minimum skeleton — copy this, never read another command as a template
+
+```python
+# services/commands/<domain>/create_record.py
+from pydantic import BaseModel, ValidationError as PydanticValidationError, field_validator
+
+from my_app.errors.validation import ValidationError
+from my_app.services.context import ServiceContext
+
+
+class RecordCreateRequest(BaseModel):
+    name: str
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def normalize_name(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("name must not be blank.")
+        return v
+
+
+def parse_create_record_request(data: dict) -> RecordCreateRequest:
+    try:
+        return RecordCreateRequest.model_validate(data)
+    except PydanticValidationError as exc:
+        first_error = exc.errors()[0]
+        field = ".".join(str(loc) for loc in first_error["loc"])
+        raise ValidationError(f"{field}: {first_error['msg']}") from exc
+
+
+async def create_record(ctx: ServiceContext) -> dict:
+    request = parse_create_record_request(ctx.incoming_data)
+
+    async with ctx.session.begin():
+        # reads and writes here — never ctx.incoming_data inside this block
+        pass
+
+    # event dispatch here, after commit
+    return {}
+```
+
+This file is self-contained. The request parser and the command live together. Add fields, validators, and DB logic — but do not change the skeleton shape.
+
+---
+
 ## Command signature
 
 Every command is a module-level async function:

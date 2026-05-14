@@ -9,6 +9,29 @@ Purpose: backend-local routing guide that selects contracts from `../architectur
 3. Add trigger-based expansions only when the goal explicitly requires them.
 4. Keep the selected set minimal and sufficient.
 
+---
+
+## Pattern authority rule
+
+**Contracts are the sole pattern source. Reading an existing implementation file as a pattern reference is a protocol violation.**
+
+If a contract defines a structure — command signature, request parser shape, serializer structure, router skeleton, transaction boundary — the contract is the authority. No implementation file may be read to "confirm" or "see how it's done" for that pattern.
+
+**Permitted reads:**
+- Files being directly created or modified in this task
+- Model files for exact field names or column types (factual lookup)
+- `__init__.py` files to verify existing import paths
+
+**Forbidden reads (pattern reference):**
+- `services/commands/<other_domain>/` — `06_commands.md` is the pattern source
+- `services/queries/<other_domain>/` — `07_queries.md` is the pattern source
+- `domain/<other_domain>/serializers.py` — `46_serialization.md` is the pattern source
+- `routers/api_v1/<existing_router>.py` — `09_routers.md` is the pattern source
+
+If a contract feels ambiguous, the correct response is to re-read that contract carefully or ask for clarification — not to open an implementation file for guidance.
+
+---
+
 ## Core contracts (always include)
 
 - `../architecture/01_architecture.md`

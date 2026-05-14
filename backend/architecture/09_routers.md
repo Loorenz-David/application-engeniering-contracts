@@ -1,5 +1,56 @@
 # 09 — Router Contract
 
+## Minimum skeleton — copy this, never read another router as a template
+
+```python
+# routers/api_v1/<domain>.py
+from fastapi import APIRouter, Depends
+from pydantic import BaseModel
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from my_app.models.database import get_db
+from my_app.routers.http.response import build_err, build_ok
+from my_app.routers.utils.jwt_dep import require_roles
+from my_app.routers.utils.roles import ADMIN, MEMBER
+from my_app.services.commands.<domain>.create_record import create_record
+from my_app.services.context import ServiceContext
+from my_app.services.run_service import run_service
+
+router = APIRouter()
+
+
+class RecordCreateBody(BaseModel):
+    name: str
+
+
+@router.post("")
+async def create_record_route(
+    body:    RecordCreateBody,
+    claims:  dict         = Depends(require_roles([ADMIN, MEMBER])),
+    session: AsyncSession = Depends(get_db),
+):
+    ctx = ServiceContext(
+        incoming_data=body.model_dump(),
+        identity=claims,
+        session=session,
+    )
+    outcome = await run_service(create_record, ctx)
+    if not outcome.success:
+        return build_err(outcome.error)
+    return build_ok(outcome.data)
+```
+
+Register this router in `routers/api_v1/__init__.py`:
+
+```python
+from .record import router as record_router
+app.include_router(record_router, prefix="/api/v1/records", tags=["records"])
+```
+
+Add fields to `RecordCreateBody` and swap the command import — do not change the handler shape.
+
+---
+
 ## What routers own
 
 A route handler does exactly these steps, in this order:
