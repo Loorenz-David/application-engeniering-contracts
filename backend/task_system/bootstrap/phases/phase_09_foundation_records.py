@@ -308,8 +308,8 @@ async def generate_upload_url(ctx: ServiceContext) -> dict:
         expires_at=datetime.now(timezone.utc) + timedelta(minutes=10),
         size_bytes=size_bytes,
     )
-    ctx.session.add(upload)
-    await ctx.session.commit()
+    async with ctx.session.begin():
+        ctx.session.add(upload)
     return {{"upload_url": upload_url, "pending_upload_client_id": upload.client_id, "storage_key": storage_key, "expires_in_seconds": _PRESIGN_TTL}}
 """, force=force)
     _write(root / a / "services" / "commands" / "files" / "confirm_upload.py", f"""\
@@ -326,25 +326,25 @@ from {a}.services.infra.storage import get_storage_client
 async def confirm_upload(ctx: ServiceContext) -> dict:
     data = ctx.incoming_data or {{}}
     storage_key = data.get("storage_key")
-    upload = (await ctx.session.execute(
-        select(PendingUpload).where(
-            PendingUpload.storage_key == storage_key,
-            PendingUpload.workspace_id == ctx.workspace_id,
-            PendingUpload.status == PendingUploadStatusEnum.PENDING,
-        )
-    )).scalar_one_or_none()
-    if upload is None:
-        raise NotFound("Upload not found or already confirmed.")
+    async with ctx.session.begin():
+        upload = (await ctx.session.execute(
+            select(PendingUpload).where(
+                PendingUpload.storage_key == storage_key,
+                PendingUpload.workspace_id == ctx.workspace_id,
+                PendingUpload.status == PendingUploadStatusEnum.PENDING,
+            )
+        )).scalar_one_or_none()
+        if upload is None:
+            raise NotFound("Upload not found or already confirmed.")
 
-    metadata = get_storage_client().head_object(upload.storage_key)
-    if metadata is None:
-        raise ValidationError("File was not uploaded successfully. Please try again.")
-    if metadata.get("content_type") and metadata["content_type"] != upload.content_type:
-        raise ValidationError("Uploaded file content type does not match the requested content type.")
+        metadata = get_storage_client().head_object(upload.storage_key)
+        if metadata is None:
+            raise ValidationError("File was not uploaded successfully. Please try again.")
+        if metadata.get("content_type") and metadata["content_type"] != upload.content_type:
+            raise ValidationError("Uploaded file content type does not match the requested content type.")
 
-    upload.status = PendingUploadStatusEnum.CONFIRMED
-    upload.size_bytes = metadata["content_length"]
-    await ctx.session.commit()
+        upload.status = PendingUploadStatusEnum.CONFIRMED
+        upload.size_bytes = metadata["content_length"]
     return {{"status": "confirmed", "storage_key": upload.storage_key, "size_bytes": upload.size_bytes}}
 """, force=force)
     _write(root / a / "services" / "queries" / "files" / "get_pending_upload_download_url.py", f"""\
@@ -690,9 +690,9 @@ async def generate_upload_url(ctx: ServiceContext) -> dict:
         expires_at=datetime.now(timezone.utc) + timedelta(seconds=_PRESIGN_TTL),
         size_bytes=size_bytes,
     )
-    ctx.session.add(upload)
-    await ctx.session.flush()
-    await ctx.session.commit()
+    async with ctx.session.begin():
+        ctx.session.add(upload)
+        await ctx.session.flush()
     return {{"upload_url": upload_url, "pending_upload_client_id": upload.client_id, "storage_key": storage_key, "expires_in": _PRESIGN_TTL}}
 """, force=force)
     _write(root / a / "services" / "commands" / "images" / "confirm_upload.py", f"""\
@@ -724,47 +724,47 @@ async def confirm_upload(ctx: ServiceContext) -> dict:
     entity_type = ImageLinkEntityTypeEnum(data.get("entity_type"))
     entity_client_id = data.get("entity_client_id")
 
-    upload = await ctx.session.get(PendingUpload, pending_upload_client_id)
-    if upload is None:
-        raise NotFound("PendingUpload not found")
-    if upload.status != PendingUploadStatusEnum.PENDING:
-        raise ValidationError("upload already confirmed or expired")
+    async with ctx.session.begin():
+        upload = await ctx.session.get(PendingUpload, pending_upload_client_id)
+        if upload is None:
+            raise NotFound("PendingUpload not found")
+        if upload.status != PendingUploadStatusEnum.PENDING:
+            raise ValidationError("upload already confirmed or expired")
 
-    metadata = get_storage_client().head_object(upload.storage_key)
-    if not metadata:
-        raise ValidationError("file has not been uploaded yet")
+        metadata = get_storage_client().head_object(upload.storage_key)
+        if not metadata:
+            raise ValidationError("file has not been uploaded yet")
 
-    try:
-        provider = ImageStorageProviderEnum(settings.storage_provider)
-    except ValueError:
-        provider = ImageStorageProviderEnum.S3
-    source_ref = ImageSourceReferenceEnum.S3_IMAGE_URL if provider == ImageStorageProviderEnum.S3 else None
-    image = Image(
-        image_url=upload.storage_key,
-        storage_provider=provider,
-        source_type=ImageSourceTypeEnum.UPLOADED,
-        source_reference=source_ref,
-        file_size_bytes=metadata["content_length"],
-        created_by_id=ctx.user_id,
-    )
-    ctx.session.add(image)
-    await ctx.session.flush()
-
-    next_order = (await ctx.session.execute(
-        select(func.count(ImageLink.client_id)).where(
-            ImageLink.entity_type == entity_type,
-            ImageLink.entity_client_id == entity_client_id,
+        try:
+            provider = ImageStorageProviderEnum(settings.storage_provider)
+        except ValueError:
+            provider = ImageStorageProviderEnum.S3
+        source_ref = ImageSourceReferenceEnum.S3_IMAGE_URL if provider == ImageStorageProviderEnum.S3 else None
+        image = Image(
+            image_url=upload.storage_key,
+            storage_provider=provider,
+            source_type=ImageSourceTypeEnum.UPLOADED,
+            source_reference=source_ref,
+            file_size_bytes=metadata["content_length"],
+            created_by_id=ctx.user_id,
         )
-    )).scalar_one()
-    ctx.session.add(ImageLink(image_id=image.client_id, entity_type=entity_type, entity_client_id=entity_client_id, display_order=next_order))
+        ctx.session.add(image)
+        await ctx.session.flush()
 
-    event = ImageEvent(image_id=image.client_id, type=_ENTITY_EVENT_MAP[entity_type], created_by_id=ctx.user_id)
-    ctx.session.add(event)
-    await ctx.session.flush()
-    image.last_event_id = event.client_id
-    upload.status = PendingUploadStatusEnum.CONFIRMED
-    upload.size_bytes = metadata["content_length"]
-    await ctx.session.commit()
+        next_order = (await ctx.session.execute(
+            select(func.count(ImageLink.client_id)).where(
+                ImageLink.entity_type == entity_type,
+                ImageLink.entity_client_id == entity_client_id,
+            )
+        )).scalar_one()
+        ctx.session.add(ImageLink(image_id=image.client_id, entity_type=entity_type, entity_client_id=entity_client_id, display_order=next_order))
+
+        event = ImageEvent(image_id=image.client_id, type=_ENTITY_EVENT_MAP[entity_type], created_by_id=ctx.user_id)
+        ctx.session.add(event)
+        await ctx.session.flush()
+        image.last_event_id = event.client_id
+        upload.status = PendingUploadStatusEnum.CONFIRMED
+        upload.size_bytes = metadata["content_length"]
     return {{"image": serialize_image(image)}}
 """, force=force)
     _write(root / a / "services" / "commands" / "images" / "soft_delete_image.py", f"""\
@@ -777,14 +777,14 @@ from {a}.services.context import ServiceContext
 
 
 async def soft_delete_image(ctx: ServiceContext) -> dict:
-    image = await ctx.session.get(Image, (ctx.incoming_data or {{}}).get("image_client_id"))
-    if image is None:
-        raise NotFound("Image not found")
-    if image.deleted_at is not None:
-        raise ValidationError("image is already deleted")
-    image.deleted_at = datetime.now(timezone.utc)
-    image.deleted_by_id = ctx.user_id
-    await ctx.session.commit()
+    async with ctx.session.begin():
+        image = await ctx.session.get(Image, (ctx.incoming_data or {{}}).get("image_client_id"))
+        if image is None:
+            raise NotFound("Image not found")
+        if image.deleted_at is not None:
+            raise ValidationError("image is already deleted")
+        image.deleted_at = datetime.now(timezone.utc)
+        image.deleted_by_id = ctx.user_id
     return {{"client_id": image.client_id}}
 """, force=force)
     _write(root / a / "services" / "commands" / "images" / "unlink_image.py", f"""\
@@ -799,19 +799,19 @@ from {a}.services.context import ServiceContext
 
 async def unlink_image(ctx: ServiceContext) -> dict:
     data = ctx.incoming_data or {{}}
-    image = await ctx.session.get(Image, data.get("image_client_id"))
-    if image is None:
-        raise NotFound("Image not found")
-    entity_type = ImageLinkEntityTypeEnum(data.get("entity_type"))
-    link = (await ctx.session.execute(select(ImageLink).where(
-        ImageLink.image_id == image.client_id,
-        ImageLink.entity_type == entity_type,
-        ImageLink.entity_client_id == data.get("entity_client_id"),
-    ))).scalar_one_or_none()
-    if link is None:
-        raise NotFound("ImageLink not found")
-    await ctx.session.delete(link)
-    await ctx.session.commit()
+    async with ctx.session.begin():
+        image = await ctx.session.get(Image, data.get("image_client_id"))
+        if image is None:
+            raise NotFound("Image not found")
+        entity_type = ImageLinkEntityTypeEnum(data.get("entity_type"))
+        link = (await ctx.session.execute(select(ImageLink).where(
+            ImageLink.image_id == image.client_id,
+            ImageLink.entity_type == entity_type,
+            ImageLink.entity_client_id == data.get("entity_client_id"),
+        ))).scalar_one_or_none()
+        if link is None:
+            raise NotFound("ImageLink not found")
+        await ctx.session.delete(link)
     return {{"unlinked": True}}
 """, force=force)
     _write(root / a / "services" / "commands" / "images" / "create_annotation.py", f"""\
@@ -843,12 +843,12 @@ async def create_annotation(ctx: ServiceContext) -> dict:
     missing = _REQUIRED_KEYS.get(ann_type, set()) - payload.keys()
     if missing:
         raise ValidationError(f"missing required keys for {{ann_type.value}}: {{sorted(missing)}}")
-    image = await ctx.session.get(Image, data.get("image_client_id"))
-    if image is None or image.deleted_at is not None:
-        raise NotFound("Image not found")
-    annotation = ImageAnnotation(image_id=image.client_id, annotation_type=ann_type, data=payload, accuracy=accuracy, created_by_id=ctx.user_id)
-    ctx.session.add(annotation)
-    await ctx.session.commit()
+    async with ctx.session.begin():
+        image = await ctx.session.get(Image, data.get("image_client_id"))
+        if image is None or image.deleted_at is not None:
+            raise NotFound("Image not found")
+        annotation = ImageAnnotation(image_id=image.client_id, annotation_type=ann_type, data=payload, accuracy=accuracy, created_by_id=ctx.user_id)
+        ctx.session.add(annotation)
     return {{"client_id": annotation.client_id}}
 """, force=force)
     _write(root / a / "services" / "commands" / "images" / "reorder_links.py", f"""\
@@ -866,16 +866,16 @@ async def reorder_links(ctx: ServiceContext) -> dict:
     entity_type = ImageLinkEntityTypeEnum(data.get("entity_type"))
     entity_client_id = data.get("entity_client_id")
     ordered_client_ids = data.get("ordered_image_client_ids", [])
-    images = {{img.client_id: img for img in (await ctx.session.execute(select(Image).where(Image.client_id.in_(ordered_client_ids)))).scalars().all()}}
-    links = {{link.image_id: link for link in (await ctx.session.execute(select(ImageLink).where(ImageLink.entity_type == entity_type, ImageLink.entity_client_id == entity_client_id))).scalars().all()}}
-    for position, client_id in enumerate(ordered_client_ids):
-        if client_id not in images:
-            raise ValidationError(f"image '{{client_id}}' not found")
-        link = links.get(client_id)
-        if link is None:
-            raise ValidationError(f"image '{{client_id}}' is not linked to this entity")
-        link.display_order = position
-    await ctx.session.commit()
+    async with ctx.session.begin():
+        images = {{img.client_id: img for img in (await ctx.session.execute(select(Image).where(Image.client_id.in_(ordered_client_ids)))).scalars().all()}}
+        links = {{link.image_id: link for link in (await ctx.session.execute(select(ImageLink).where(ImageLink.entity_type == entity_type, ImageLink.entity_client_id == entity_client_id))).scalars().all()}}
+        for position, client_id in enumerate(ordered_client_ids):
+            if client_id not in images:
+                raise ValidationError(f"image '{{client_id}}' not found")
+            link = links.get(client_id)
+            if link is None:
+                raise ValidationError(f"image '{{client_id}}' is not linked to this entity")
+            link.display_order = position
     return {{"reordered": len(ordered_client_ids)}}
 """, force=force)
 
@@ -951,13 +951,13 @@ async def create_case(ctx: ServiceContext) -> dict:
     data = ctx.incoming_data or {{}}
     case_type_id = data.get("case_type_id")
     type_label = data.get("type_label")
-    if case_type_id:
-        case_type = await ctx.session.get(CaseType, case_type_id)
-        if case_type and type_label is None:
-            type_label = case_type.name
-    case = Case(created_by_id=ctx.user_id, updated_by_id=ctx.user_id, state=CaseStateEnum.OPEN, case_type_id=case_type_id, type_label=type_label)
-    ctx.session.add(case)
-    await ctx.session.commit()
+    async with ctx.session.begin():
+        if case_type_id:
+            case_type = await ctx.session.get(CaseType, case_type_id)
+            if case_type and type_label is None:
+                type_label = case_type.name
+        case = Case(created_by_id=ctx.user_id, updated_by_id=ctx.user_id, state=CaseStateEnum.OPEN, case_type_id=case_type_id, type_label=type_label)
+        ctx.session.add(case)
     return {{"case": serialize_case(case)}}
 """, force=force)
     _write(root / a / "services" / "commands" / "cases" / "update_case.py", f"""\
@@ -973,21 +973,21 @@ from {a}.services.context import ServiceContext
 
 async def update_case(ctx: ServiceContext) -> dict:
     data = ctx.incoming_data or {{}}
-    case = await ctx.session.get(Case, data.get("case_client_id"))
-    if case is None:
-        raise NotFound("Case not found")
     if "case_type_id" not in data and "type_label" not in data:
         raise ValidationError("case_type_id or type_label is required")
-    if "case_type_id" in data:
-        case.case_type_id = data.get("case_type_id")
-        if case.case_type_id and "type_label" not in data:
-            case_type = await ctx.session.get(CaseType, case.case_type_id)
-            case.type_label = case_type.name if case_type else case.type_label
-    if "type_label" in data:
-        case.type_label = data.get("type_label")
-    case.updated_by_id = ctx.user_id
-    case.updated_at = datetime.now(timezone.utc)
-    await ctx.session.commit()
+    async with ctx.session.begin():
+        case = await ctx.session.get(Case, data.get("case_client_id"))
+        if case is None:
+            raise NotFound("Case not found")
+        if "case_type_id" in data:
+            case.case_type_id = data.get("case_type_id")
+            if case.case_type_id and "type_label" not in data:
+                case_type = await ctx.session.get(CaseType, case.case_type_id)
+                case.type_label = case_type.name if case_type else case.type_label
+        if "type_label" in data:
+            case.type_label = data.get("type_label")
+        case.updated_by_id = ctx.user_id
+        case.updated_at = datetime.now(timezone.utc)
     return {{"case": serialize_case(case)}}
 """, force=force)
     _write(root / a / "services" / "commands" / "cases" / "update_case_state.py", f"""\
@@ -1002,13 +1002,13 @@ from {a}.services.context import ServiceContext
 
 async def update_case_state(ctx: ServiceContext) -> dict:
     data = ctx.incoming_data or {{}}
-    case = await ctx.session.get(Case, data.get("case_client_id"))
-    if case is None:
-        raise NotFound("Case not found")
-    case.state = CaseStateEnum(data.get("new_state"))
-    case.updated_by_id = ctx.user_id
-    case.updated_at = datetime.now(timezone.utc)
-    await ctx.session.commit()
+    async with ctx.session.begin():
+        case = await ctx.session.get(Case, data.get("case_client_id"))
+        if case is None:
+            raise NotFound("Case not found")
+        case.state = CaseStateEnum(data.get("new_state"))
+        case.updated_by_id = ctx.user_id
+        case.updated_at = datetime.now(timezone.utc)
     return {{"case": serialize_case(case)}}
 """, force=force)
     _write(root / a / "services" / "commands" / "cases" / "link_entity.py", f"""\
@@ -1022,17 +1022,17 @@ from {a}.services.context import ServiceContext
 
 async def link_entity(ctx: ServiceContext) -> dict:
     data = ctx.incoming_data or {{}}
-    case = await ctx.session.get(Case, data.get("case_client_id"))
-    if case is None:
-        raise NotFound("Case not found")
-    link = CaseLink(
-        case_id=case.client_id,
-        entity_type=CaseLinkEntityTypeEnum(data.get("entity_type")),
-        entity_client_id=data.get("entity_client_id"),
-        role=CaseLinkRoleEnum(data.get("role")),
-    )
-    ctx.session.add(link)
-    await ctx.session.commit()
+    async with ctx.session.begin():
+        case = await ctx.session.get(Case, data.get("case_client_id"))
+        if case is None:
+            raise NotFound("Case not found")
+        link = CaseLink(
+            case_id=case.client_id,
+            entity_type=CaseLinkEntityTypeEnum(data.get("entity_type")),
+            entity_client_id=data.get("entity_client_id"),
+            role=CaseLinkRoleEnum(data.get("role")),
+        )
+        ctx.session.add(link)
     return {{"link": serialize_case_link(link)}}
 """, force=force)
     _write(root / a / "services" / "commands" / "cases" / "unlink_entity.py", f"""\
@@ -1042,11 +1042,11 @@ from {a}.services.context import ServiceContext
 
 
 async def unlink_entity(ctx: ServiceContext) -> dict:
-    link = await ctx.session.get(CaseLink, (ctx.incoming_data or {{}}).get("case_link_client_id"))
-    if link is None:
-        raise NotFound("CaseLink not found")
-    await ctx.session.delete(link)
-    await ctx.session.commit()
+    async with ctx.session.begin():
+        link = await ctx.session.get(CaseLink, (ctx.incoming_data or {{}}).get("case_link_client_id"))
+        if link is None:
+            raise NotFound("CaseLink not found")
+        await ctx.session.delete(link)
     return {{"deleted": True}}
 """, force=force)
     _write(root / a / "services" / "commands" / "cases" / "add_participant.py", f"""\
@@ -1061,16 +1061,16 @@ from {a}.services.context import ServiceContext
 
 async def add_participant(ctx: ServiceContext) -> dict:
     data = ctx.incoming_data or {{}}
-    case = await ctx.session.get(Case, data.get("case_client_id"))
-    if case is None:
-        raise NotFound("Case not found")
     user_ids = set(data.get("user_ids") or [])
-    existing = set((await ctx.session.execute(select(CaseParticipant.user_id).where(CaseParticipant.case_id == case.client_id, CaseParticipant.user_id.in_(user_ids)))).scalars().all())
-    added = [CaseParticipant(case_id=case.client_id, user_id=user_id) for user_id in user_ids - existing]
-    ctx.session.add_all(added)
-    if added:
-        await ctx.session.execute(update(Case).where(Case.client_id == case.client_id).values(participants_count=Case.participants_count + len(added)))
-    await ctx.session.commit()
+    async with ctx.session.begin():
+        case = await ctx.session.get(Case, data.get("case_client_id"))
+        if case is None:
+            raise NotFound("Case not found")
+        existing = set((await ctx.session.execute(select(CaseParticipant.user_id).where(CaseParticipant.case_id == case.client_id, CaseParticipant.user_id.in_(user_ids)))).scalars().all())
+        added = [CaseParticipant(case_id=case.client_id, user_id=user_id) for user_id in user_ids - existing]
+        ctx.session.add_all(added)
+        if added:
+            await ctx.session.execute(update(Case).where(Case.client_id == case.client_id).values(participants_count=Case.participants_count + len(added)))
     return {{"added": [serialize_participant(participant) for participant in added]}}
 """, force=force)
     _write(root / a / "services" / "commands" / "cases" / "remove_participant.py", f"""\
@@ -1083,13 +1083,13 @@ from {a}.services.context import ServiceContext
 
 
 async def remove_participant(ctx: ServiceContext) -> dict:
-    participant = await ctx.session.get(CaseParticipant, (ctx.incoming_data or {{}}).get("case_participant_client_id"))
-    if participant is None:
-        raise NotFound("CaseParticipant not found")
-    case_id = participant.case_id
-    await ctx.session.delete(participant)
-    await ctx.session.execute(update(Case).where(Case.client_id == case_id).values(participants_count=func.greatest(Case.participants_count - 1, 0)))
-    await ctx.session.commit()
+    async with ctx.session.begin():
+        participant = await ctx.session.get(CaseParticipant, (ctx.incoming_data or {{}}).get("case_participant_client_id"))
+        if participant is None:
+            raise NotFound("CaseParticipant not found")
+        case_id = participant.case_id
+        await ctx.session.delete(participant)
+        await ctx.session.execute(update(Case).where(Case.client_id == case_id).values(participants_count=func.greatest(Case.participants_count - 1, 0)))
     return {{"deleted": True}}
 """, force=force)
     _write(root / a / "services" / "commands" / "cases" / "create_conversation.py", f"""\
@@ -1104,13 +1104,13 @@ from {a}.services.context import ServiceContext
 
 
 async def create_conversation(ctx: ServiceContext) -> dict:
-    case = await ctx.session.get(Case, (ctx.incoming_data or {{}}).get("case_client_id"))
-    if case is None:
-        raise NotFound("Case not found")
-    conversation = CaseConversation(case_id=case.client_id, created_by_id=ctx.user_id, state=CaseStateEnum.OPEN)
-    ctx.session.add(conversation)
-    await ctx.session.execute(update(Case).where(Case.client_id == case.client_id).values(conversations_count=Case.conversations_count + 1))
-    await ctx.session.commit()
+    async with ctx.session.begin():
+        case = await ctx.session.get(Case, (ctx.incoming_data or {{}}).get("case_client_id"))
+        if case is None:
+            raise NotFound("Case not found")
+        conversation = CaseConversation(case_id=case.client_id, created_by_id=ctx.user_id, state=CaseStateEnum.OPEN)
+        ctx.session.add(conversation)
+        await ctx.session.execute(update(Case).where(Case.client_id == case.client_id).values(conversations_count=Case.conversations_count + 1))
     return {{"conversation": serialize_conversation(conversation)}}
 """, force=force)
     _write(root / a / "services" / "commands" / "cases" / "send_message.py", f"""\
@@ -1138,25 +1138,25 @@ async def _next_message_seq(ctx: ServiceContext, conversation_id: str) -> int:
 
 async def send_message(ctx: ServiceContext) -> dict:
     data = ctx.incoming_data or {{}}
-    conversation = await ctx.session.get(CaseConversation, data.get("conversation_client_id"))
-    if conversation is None:
-        raise NotFound("Conversation not found")
     blocks = validate_content(data.get("content"))
     content = [block.__dict__ for block in blocks]
-    seq = await _next_message_seq(ctx, conversation.client_id)
-    message = CaseConversationMessage(
-        case_conversation_id=conversation.client_id,
-        message_seq=seq,
-        created_by_id=ctx.user_id,
-        content=content,
-        plain_text=data.get("plain_text", ""),
-    )
-    ctx.session.add(message)
-    await ctx.session.flush()
-    await process_content_mentions(ctx.session, content, ContentMentionLinkEntityTypeEnum.CASE_CONVERSATION_MESSAGE, message.client_id, ctx.user_id)
-    await ctx.session.execute(update(CaseConversation).where(CaseConversation.client_id == conversation.client_id).values(messages_count=CaseConversation.messages_count + 1))
-    await ctx.session.execute(update(Case).where(Case.client_id == conversation.case_id).values(messages_count=Case.messages_count + 1))
-    await ctx.session.commit()
+    async with ctx.session.begin():
+        conversation = await ctx.session.get(CaseConversation, data.get("conversation_client_id"))
+        if conversation is None:
+            raise NotFound("Conversation not found")
+        seq = await _next_message_seq(ctx, conversation.client_id)
+        message = CaseConversationMessage(
+            case_conversation_id=conversation.client_id,
+            message_seq=seq,
+            created_by_id=ctx.user_id,
+            content=content,
+            plain_text=data.get("plain_text", ""),
+        )
+        ctx.session.add(message)
+        await ctx.session.flush()
+        await process_content_mentions(ctx.session, content, ContentMentionLinkEntityTypeEnum.CASE_CONVERSATION_MESSAGE, message.client_id, ctx.user_id)
+        await ctx.session.execute(update(CaseConversation).where(CaseConversation.client_id == conversation.client_id).values(messages_count=CaseConversation.messages_count + 1))
+        await ctx.session.execute(update(Case).where(Case.client_id == conversation.case_id).values(messages_count=Case.messages_count + 1))
     return {{"message": serialize_message(message)}}
 """, force=force)
     _write(root / a / "services" / "commands" / "cases" / "edit_message.py", f"""\
@@ -1173,19 +1173,19 @@ from {a}.services.infra.content import process_content_mentions, validate_conten
 
 async def edit_message(ctx: ServiceContext) -> dict:
     data = ctx.incoming_data or {{}}
-    message = await ctx.session.get(CaseConversationMessage, data.get("message_client_id"))
-    if message is None:
-        raise NotFound("Message not found")
-    if message.has_been_deleted:
-        raise ValidationError("deleted messages cannot be edited")
     blocks = validate_content(data.get("content"))
     content = [block.__dict__ for block in blocks]
-    message.content = content
-    message.plain_text = data.get("plain_text", "")
-    message.has_been_edited = True
-    message.updated_at = datetime.now(timezone.utc)
-    await process_content_mentions(ctx.session, content, ContentMentionLinkEntityTypeEnum.CASE_CONVERSATION_MESSAGE, message.client_id, ctx.user_id, replace=True)
-    await ctx.session.commit()
+    async with ctx.session.begin():
+        message = await ctx.session.get(CaseConversationMessage, data.get("message_client_id"))
+        if message is None:
+            raise NotFound("Message not found")
+        if message.has_been_deleted:
+            raise ValidationError("deleted messages cannot be edited")
+        message.content = content
+        message.plain_text = data.get("plain_text", "")
+        message.has_been_edited = True
+        message.updated_at = datetime.now(timezone.utc)
+        await process_content_mentions(ctx.session, content, ContentMentionLinkEntityTypeEnum.CASE_CONVERSATION_MESSAGE, message.client_id, ctx.user_id, replace=True)
     return {{"message": serialize_message(message)}}
 """, force=force)
     _write(root / a / "services" / "commands" / "cases" / "soft_delete_message.py", f"""\
@@ -1199,16 +1199,16 @@ from {a}.services.context import ServiceContext
 
 
 async def soft_delete_message(ctx: ServiceContext) -> dict:
-    message = await ctx.session.get(CaseConversationMessage, (ctx.incoming_data or {{}}).get("message_client_id"))
-    if message is None:
-        raise NotFound("Message not found")
-    if not message.has_been_deleted:
-        message.has_been_deleted = True
-        conversation = await ctx.session.get(CaseConversation, message.case_conversation_id)
-        await ctx.session.execute(update(CaseConversation).where(CaseConversation.client_id == message.case_conversation_id).values(messages_count=func.greatest(CaseConversation.messages_count - 1, 0)))
-        if conversation:
-            await ctx.session.execute(update(Case).where(Case.client_id == conversation.case_id).values(messages_count=func.greatest(Case.messages_count - 1, 0)))
-    await ctx.session.commit()
+    async with ctx.session.begin():
+        message = await ctx.session.get(CaseConversationMessage, (ctx.incoming_data or {{}}).get("message_client_id"))
+        if message is None:
+            raise NotFound("Message not found")
+        if not message.has_been_deleted:
+            message.has_been_deleted = True
+            conversation = await ctx.session.get(CaseConversation, message.case_conversation_id)
+            await ctx.session.execute(update(CaseConversation).where(CaseConversation.client_id == message.case_conversation_id).values(messages_count=func.greatest(CaseConversation.messages_count - 1, 0)))
+            if conversation:
+                await ctx.session.execute(update(Case).where(Case.client_id == conversation.case_id).values(messages_count=func.greatest(Case.messages_count - 1, 0)))
     return {{"deleted": True}}
 """, force=force)
     _write(root / a / "services" / "commands" / "cases" / "mark_read.py", f"""\
@@ -1219,11 +1219,11 @@ from {a}.services.context import ServiceContext
 
 async def mark_read(ctx: ServiceContext) -> dict:
     data = ctx.incoming_data or {{}}
-    participant = await ctx.session.get(CaseParticipant, data.get("case_participant_client_id"))
-    if participant is None:
-        raise NotFound("CaseParticipant not found")
-    participant.last_read_message_seq = max(participant.last_read_message_seq, int(data.get("up_to_message_seq", 0)))
-    await ctx.session.commit()
+    async with ctx.session.begin():
+        participant = await ctx.session.get(CaseParticipant, data.get("case_participant_client_id"))
+        if participant is None:
+            raise NotFound("CaseParticipant not found")
+        participant.last_read_message_seq = max(participant.last_read_message_seq, int(data.get("up_to_message_seq", 0)))
     return {{"last_read_message_seq": participant.last_read_message_seq}}
 """, force=force)
 
@@ -2506,13 +2506,13 @@ async def create_case(ctx: ServiceContext) -> dict:
     data = ctx.incoming_data or {{}}
     case_type_id = data.get("case_type_id")
     type_label = data.get("type_label")
-    if case_type_id:
-        case_type = await ctx.session.get(CaseType, case_type_id)
-        if case_type and type_label is None:
-            type_label = case_type.name
-    case = Case(created_by_id=ctx.user_id, updated_by_id=ctx.user_id, state=CaseStateEnum.OPEN, case_type_id=case_type_id, type_label=type_label)
-    ctx.session.add(case)
-    await ctx.session.commit()
+    async with ctx.session.begin():
+        if case_type_id:
+            case_type = await ctx.session.get(CaseType, case_type_id)
+            if case_type and type_label is None:
+                type_label = case_type.name
+        case = Case(created_by_id=ctx.user_id, updated_by_id=ctx.user_id, state=CaseStateEnum.OPEN, case_type_id=case_type_id, type_label=type_label)
+        ctx.session.add(case)
     event = build_workspace_event(case, CaseEvent.CREATED, workspace_id=ctx.workspace_id)
     await dispatch([event])
     return {{"case": serialize_case(case)}}
@@ -2534,21 +2534,21 @@ from {a}.services.infra.events.build_event import build_workspace_event
 
 async def update_case(ctx: ServiceContext) -> dict:
     data = ctx.incoming_data or {{}}
-    case = await ctx.session.get(Case, data.get("case_client_id"))
-    if case is None:
-        raise NotFound("Case not found")
     if "case_type_id" not in data and "type_label" not in data:
         raise ValidationError("case_type_id or type_label is required")
-    if "case_type_id" in data:
-        case.case_type_id = data.get("case_type_id")
-        if case.case_type_id and "type_label" not in data:
-            case_type = await ctx.session.get(CaseType, case.case_type_id)
-            case.type_label = case_type.name if case_type else case.type_label
-    if "type_label" in data:
-        case.type_label = data.get("type_label")
-    case.updated_by_id = ctx.user_id
-    case.updated_at = datetime.now(timezone.utc)
-    await ctx.session.commit()
+    async with ctx.session.begin():
+        case = await ctx.session.get(Case, data.get("case_client_id"))
+        if case is None:
+            raise NotFound("Case not found")
+        if "case_type_id" in data:
+            case.case_type_id = data.get("case_type_id")
+            if case.case_type_id and "type_label" not in data:
+                case_type = await ctx.session.get(CaseType, case.case_type_id)
+                case.type_label = case_type.name if case_type else case.type_label
+        if "type_label" in data:
+            case.type_label = data.get("type_label")
+        case.updated_by_id = ctx.user_id
+        case.updated_at = datetime.now(timezone.utc)
     event = build_workspace_event(case, CaseEvent.UPDATED, workspace_id=ctx.workspace_id)
     await dispatch([event])
     return {{"case": serialize_case(case)}}
@@ -2569,14 +2569,14 @@ from {a}.services.infra.events.build_event import build_workspace_event
 
 async def update_case_state(ctx: ServiceContext) -> dict:
     data = ctx.incoming_data or {{}}
-    case = await ctx.session.get(Case, data.get("case_client_id"))
-    if case is None:
-        raise NotFound("Case not found")
     new_state = CaseStateEnum(data.get("new_state"))
-    case.state = new_state
-    case.updated_by_id = ctx.user_id
-    case.updated_at = datetime.now(timezone.utc)
-    await ctx.session.commit()
+    async with ctx.session.begin():
+        case = await ctx.session.get(Case, data.get("case_client_id"))
+        if case is None:
+            raise NotFound("Case not found")
+        case.state = new_state
+        case.updated_by_id = ctx.user_id
+        case.updated_at = datetime.now(timezone.utc)
     event = build_workspace_event(case, CaseEvent.STATE_CHANGED, workspace_id=ctx.workspace_id, extra=case_state_extra(new_state))
     await dispatch([event])
     return {{"case": serialize_case(case)}}
@@ -2597,16 +2597,16 @@ from {a}.services.infra.events.build_event import build_workspace_event
 
 async def add_participant(ctx: ServiceContext) -> dict:
     data = ctx.incoming_data or {{}}
-    case = await ctx.session.get(Case, data.get("case_client_id"))
-    if case is None:
-        raise NotFound("Case not found")
     user_ids = set(data.get("user_ids") or [])
-    existing = set((await ctx.session.execute(select(CaseParticipant.user_id).where(CaseParticipant.case_id == case.client_id, CaseParticipant.user_id.in_(user_ids)))).scalars().all())
-    added = [CaseParticipant(case_id=case.client_id, user_id=user_id) for user_id in user_ids - existing]
-    ctx.session.add_all(added)
-    if added:
-        await ctx.session.execute(update(Case).where(Case.client_id == case.client_id).values(participants_count=Case.participants_count + len(added)))
-    await ctx.session.commit()
+    async with ctx.session.begin():
+        case = await ctx.session.get(Case, data.get("case_client_id"))
+        if case is None:
+            raise NotFound("Case not found")
+        existing = set((await ctx.session.execute(select(CaseParticipant.user_id).where(CaseParticipant.case_id == case.client_id, CaseParticipant.user_id.in_(user_ids)))).scalars().all())
+        added = [CaseParticipant(case_id=case.client_id, user_id=user_id) for user_id in user_ids - existing]
+        ctx.session.add_all(added)
+        if added:
+            await ctx.session.execute(update(Case).where(Case.client_id == case.client_id).values(participants_count=Case.participants_count + len(added)))
     if added:
         event = build_workspace_event(case, CaseEvent.PARTICIPANT_ADDED, workspace_id=ctx.workspace_id)
         await dispatch([event])
@@ -2626,14 +2626,14 @@ from {a}.services.infra.events.build_event import build_workspace_event
 
 
 async def remove_participant(ctx: ServiceContext) -> dict:
-    participant = await ctx.session.get(CaseParticipant, (ctx.incoming_data or {{}}).get("case_participant_client_id"))
-    if participant is None:
-        raise NotFound("CaseParticipant not found")
-    case_id = participant.case_id
-    case = await ctx.session.get(Case, case_id)
-    await ctx.session.delete(participant)
-    await ctx.session.execute(update(Case).where(Case.client_id == case_id).values(participants_count=func.greatest(Case.participants_count - 1, 0)))
-    await ctx.session.commit()
+    async with ctx.session.begin():
+        participant = await ctx.session.get(CaseParticipant, (ctx.incoming_data or {{}}).get("case_participant_client_id"))
+        if participant is None:
+            raise NotFound("CaseParticipant not found")
+        case_id = participant.case_id
+        case = await ctx.session.get(Case, case_id)
+        await ctx.session.delete(participant)
+        await ctx.session.execute(update(Case).where(Case.client_id == case_id).values(participants_count=func.greatest(Case.participants_count - 1, 0)))
     if case:
         event = build_workspace_event(case, CaseEvent.PARTICIPANT_REMOVED, workspace_id=ctx.workspace_id)
         await dispatch([event])
@@ -2655,13 +2655,13 @@ from {a}.services.infra.events.build_event import build_workspace_event
 
 
 async def create_conversation(ctx: ServiceContext) -> dict:
-    case = await ctx.session.get(Case, (ctx.incoming_data or {{}}).get("case_client_id"))
-    if case is None:
-        raise NotFound("Case not found")
-    conversation = CaseConversation(case_id=case.client_id, created_by_id=ctx.user_id, state=CaseStateEnum.OPEN)
-    ctx.session.add(conversation)
-    await ctx.session.execute(update(Case).where(Case.client_id == case.client_id).values(conversations_count=Case.conversations_count + 1))
-    await ctx.session.commit()
+    async with ctx.session.begin():
+        case = await ctx.session.get(Case, (ctx.incoming_data or {{}}).get("case_client_id"))
+        if case is None:
+            raise NotFound("Case not found")
+        conversation = CaseConversation(case_id=case.client_id, created_by_id=ctx.user_id, state=CaseStateEnum.OPEN)
+        ctx.session.add(conversation)
+        await ctx.session.execute(update(Case).where(Case.client_id == case.client_id).values(conversations_count=Case.conversations_count + 1))
     event = build_workspace_event(case, CaseEvent.CONVERSATION_CREATED, workspace_id=ctx.workspace_id)
     await dispatch([event])
     return {{"conversation": serialize_conversation(conversation)}}
@@ -2695,25 +2695,25 @@ async def _next_message_seq(ctx: ServiceContext, conversation_id: str) -> int:
 
 async def send_message(ctx: ServiceContext) -> dict:
     data = ctx.incoming_data or {{}}
-    conversation = await ctx.session.get(CaseConversation, data.get("conversation_client_id"))
-    if conversation is None:
-        raise NotFound("Conversation not found")
     blocks = validate_content(data.get("content"))
     content = [block.__dict__ for block in blocks]
-    seq = await _next_message_seq(ctx, conversation.client_id)
-    message = CaseConversationMessage(
-        case_conversation_id=conversation.client_id,
-        message_seq=seq,
-        created_by_id=ctx.user_id,
-        content=content,
-        plain_text=data.get("plain_text", ""),
-    )
-    ctx.session.add(message)
-    await ctx.session.flush()
-    await process_content_mentions(ctx.session, content, ContentMentionLinkEntityTypeEnum.CASE_CONVERSATION_MESSAGE, message.client_id, ctx.user_id)
-    await ctx.session.execute(update(CaseConversation).where(CaseConversation.client_id == conversation.client_id).values(messages_count=CaseConversation.messages_count + 1))
-    await ctx.session.execute(update(Case).where(Case.client_id == conversation.case_id).values(messages_count=Case.messages_count + 1))
-    await ctx.session.commit()
+    async with ctx.session.begin():
+        conversation = await ctx.session.get(CaseConversation, data.get("conversation_client_id"))
+        if conversation is None:
+            raise NotFound("Conversation not found")
+        seq = await _next_message_seq(ctx, conversation.client_id)
+        message = CaseConversationMessage(
+            case_conversation_id=conversation.client_id,
+            message_seq=seq,
+            created_by_id=ctx.user_id,
+            content=content,
+            plain_text=data.get("plain_text", ""),
+        )
+        ctx.session.add(message)
+        await ctx.session.flush()
+        await process_content_mentions(ctx.session, content, ContentMentionLinkEntityTypeEnum.CASE_CONVERSATION_MESSAGE, message.client_id, ctx.user_id)
+        await ctx.session.execute(update(CaseConversation).where(CaseConversation.client_id == conversation.client_id).values(messages_count=CaseConversation.messages_count + 1))
+        await ctx.session.execute(update(Case).where(Case.client_id == conversation.case_id).values(messages_count=Case.messages_count + 1))
     event = build_conversation_event(
         message,
         ConversationMessageEvent.CREATED,
@@ -2742,19 +2742,19 @@ from {a}.services.infra.events.build_event import build_conversation_event
 
 async def edit_message(ctx: ServiceContext) -> dict:
     data = ctx.incoming_data or {{}}
-    message = await ctx.session.get(CaseConversationMessage, data.get("message_client_id"))
-    if message is None:
-        raise NotFound("Message not found")
-    if message.has_been_deleted:
-        raise ValidationError("deleted messages cannot be edited")
     blocks = validate_content(data.get("content"))
     content = [block.__dict__ for block in blocks]
-    message.content = content
-    message.plain_text = data.get("plain_text", "")
-    message.has_been_edited = True
-    message.updated_at = datetime.now(timezone.utc)
-    await process_content_mentions(ctx.session, content, ContentMentionLinkEntityTypeEnum.CASE_CONVERSATION_MESSAGE, message.client_id, ctx.user_id, replace=True)
-    await ctx.session.commit()
+    async with ctx.session.begin():
+        message = await ctx.session.get(CaseConversationMessage, data.get("message_client_id"))
+        if message is None:
+            raise NotFound("Message not found")
+        if message.has_been_deleted:
+            raise ValidationError("deleted messages cannot be edited")
+        message.content = content
+        message.plain_text = data.get("plain_text", "")
+        message.has_been_edited = True
+        message.updated_at = datetime.now(timezone.utc)
+        await process_content_mentions(ctx.session, content, ContentMentionLinkEntityTypeEnum.CASE_CONVERSATION_MESSAGE, message.client_id, ctx.user_id, replace=True)
     event = build_conversation_event(
         message,
         ConversationMessageEvent.EDITED,
@@ -2779,17 +2779,17 @@ from {a}.services.infra.events.build_event import build_conversation_event
 
 
 async def soft_delete_message(ctx: ServiceContext) -> dict:
-    message = await ctx.session.get(CaseConversationMessage, (ctx.incoming_data or {{}}).get("message_client_id"))
-    if message is None:
-        raise NotFound("Message not found")
-    conversation_id = message.case_conversation_id
-    if not message.has_been_deleted:
-        message.has_been_deleted = True
-        conversation = await ctx.session.get(CaseConversation, conversation_id)
-        await ctx.session.execute(update(CaseConversation).where(CaseConversation.client_id == conversation_id).values(messages_count=func.greatest(CaseConversation.messages_count - 1, 0)))
-        if conversation:
-            await ctx.session.execute(update(Case).where(Case.client_id == conversation.case_id).values(messages_count=func.greatest(Case.messages_count - 1, 0)))
-    await ctx.session.commit()
+    async with ctx.session.begin():
+        message = await ctx.session.get(CaseConversationMessage, (ctx.incoming_data or {{}}).get("message_client_id"))
+        if message is None:
+            raise NotFound("Message not found")
+        conversation_id = message.case_conversation_id
+        if not message.has_been_deleted:
+            message.has_been_deleted = True
+            conversation = await ctx.session.get(CaseConversation, conversation_id)
+            await ctx.session.execute(update(CaseConversation).where(CaseConversation.client_id == conversation_id).values(messages_count=func.greatest(CaseConversation.messages_count - 1, 0)))
+            if conversation:
+                await ctx.session.execute(update(Case).where(Case.client_id == conversation.case_id).values(messages_count=func.greatest(Case.messages_count - 1, 0)))
     event = build_conversation_event(
         message,
         ConversationMessageEvent.DELETED,

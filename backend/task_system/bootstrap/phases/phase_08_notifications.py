@@ -196,29 +196,29 @@ async def register_push_subscription(ctx: ServiceContext) -> dict:
     data     = ctx.incoming_data
     endpoint = data["endpoint"]
 
-    result = await ctx.session.execute(
-        select(PushSubscription).where(
-            PushSubscription.user_id == ctx.user_id,
-            PushSubscription.endpoint == endpoint,
+    async with ctx.session.begin():
+        result = await ctx.session.execute(
+            select(PushSubscription).where(
+                PushSubscription.user_id == ctx.user_id,
+                PushSubscription.endpoint == endpoint,
+            )
         )
-    )
-    sub = result.scalar_one_or_none()
+        sub = result.scalar_one_or_none()
 
-    if sub is None:
-        sub = PushSubscription(
-            user_id=ctx.user_id,
-            endpoint=endpoint,
-            p256dh=data["p256dh"],
-            auth=data["auth"],
-        )
-        ctx.session.add(sub)
-    else:
-        sub.p256dh = data["p256dh"]
-        sub.auth   = data["auth"]
+        if sub is None:
+            sub = PushSubscription(
+                user_id=ctx.user_id,
+                endpoint=endpoint,
+                p256dh=data["p256dh"],
+                auth=data["auth"],
+            )
+            ctx.session.add(sub)
+        else:
+            sub.p256dh = data["p256dh"]
+            sub.auth   = data["auth"]
 
-    sub.device_label = data.get("device_label")
-    sub.last_used_at = datetime.now(timezone.utc)
-    await ctx.session.commit()
+        sub.device_label = data.get("device_label")
+        sub.last_used_at = datetime.now(timezone.utc)
     return {{"subscription": {{"client_id": sub.client_id}}}}
 """, force=force)
 
@@ -232,16 +232,16 @@ from {a}.services.context import ServiceContext
 async def unregister_push_subscription(ctx: ServiceContext) -> dict:
     \"\"\"Hard-delete PushSubscription by endpoint. No-op if already deleted.\"\"\"
     endpoint = ctx.incoming_data.get("endpoint")
-    result   = await ctx.session.execute(
-        select(PushSubscription).where(
-            PushSubscription.user_id == ctx.user_id,
-            PushSubscription.endpoint == endpoint,
+    async with ctx.session.begin():
+        result   = await ctx.session.execute(
+            select(PushSubscription).where(
+                PushSubscription.user_id == ctx.user_id,
+                PushSubscription.endpoint == endpoint,
+            )
         )
-    )
-    sub = result.scalar_one_or_none()
-    if sub:
-        await ctx.session.delete(sub)
-        await ctx.session.commit()
+        sub = result.scalar_one_or_none()
+        if sub:
+            await ctx.session.delete(sub)
     return {{}}
 """, force=force)
 
@@ -255,22 +255,22 @@ from {a}.services.context import ServiceContext
 async def pin_notification(ctx: ServiceContext) -> dict:
     \"\"\"Upsert NotificationPin for (user_id, entity_type, entity_client_id). Idempotent.\"\"\"
     data = ctx.incoming_data
-    result = await ctx.session.execute(
-        select(NotificationPin).where(
-            NotificationPin.user_id          == ctx.user_id,
-            NotificationPin.entity_type      == data["entity_type"],
-            NotificationPin.entity_client_id == data["entity_client_id"],
+    async with ctx.session.begin():
+        result = await ctx.session.execute(
+            select(NotificationPin).where(
+                NotificationPin.user_id          == ctx.user_id,
+                NotificationPin.entity_type      == data["entity_type"],
+                NotificationPin.entity_client_id == data["entity_client_id"],
+            )
         )
-    )
-    pin = result.scalar_one_or_none()
-    if pin is None:
-        pin = NotificationPin(
-            user_id=ctx.user_id,
-            entity_type=data["entity_type"],
-            entity_client_id=data["entity_client_id"],
-        )
-        ctx.session.add(pin)
-        await ctx.session.commit()
+        pin = result.scalar_one_or_none()
+        if pin is None:
+            pin = NotificationPin(
+                user_id=ctx.user_id,
+                entity_type=data["entity_type"],
+                entity_client_id=data["entity_client_id"],
+            )
+            ctx.session.add(pin)
     return {{"pin": {{"client_id": pin.client_id}}}}
 """, force=force)
 
@@ -284,17 +284,17 @@ from {a}.services.context import ServiceContext
 async def unpin_notification(ctx: ServiceContext) -> dict:
     \"\"\"Hard-delete NotificationPin. No-op if it does not exist.\"\"\"
     data   = ctx.incoming_data
-    result = await ctx.session.execute(
-        select(NotificationPin).where(
-            NotificationPin.user_id          == ctx.user_id,
-            NotificationPin.entity_type      == data["entity_type"],
-            NotificationPin.entity_client_id == data["entity_client_id"],
+    async with ctx.session.begin():
+        result = await ctx.session.execute(
+            select(NotificationPin).where(
+                NotificationPin.user_id          == ctx.user_id,
+                NotificationPin.entity_type      == data["entity_type"],
+                NotificationPin.entity_client_id == data["entity_client_id"],
+            )
         )
-    )
-    pin = result.scalar_one_or_none()
-    if pin:
-        await ctx.session.delete(pin)
-        await ctx.session.commit()
+        pin = result.scalar_one_or_none()
+        if pin:
+            await ctx.session.delete(pin)
     return {{}}
 """, force=force)
 
@@ -333,8 +333,8 @@ async def mark_notifications_read(ctx: ServiceContext) -> dict:
             return {{"marked_read": 0}}
         stmt = stmt.where(Notification.client_id.in_(target_ids))
 
-    result = await ctx.session.execute(stmt)
-    await ctx.session.commit()
+    async with ctx.session.begin():
+        result = await ctx.session.execute(stmt)
     return {{"marked_read": result.rowcount}}
 """, force=force)
 
