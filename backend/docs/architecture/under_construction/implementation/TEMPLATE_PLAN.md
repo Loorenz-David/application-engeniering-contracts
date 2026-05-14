@@ -42,20 +42,25 @@
 
 - `<backend/architecture/file_local.md>`: `<delta used>`
 
-### Files the agent must not read as pattern references
+### File read intent — pattern vs. relational
 
-Any file outside the contracts list and the files being created or modified is off-limits as a pattern source. The governing contract is the reference — not an existing file in the same codebase.
+Before reading any implementation file outside this plan's scope, apply the test:
 
-Must NOT read for patterns:
-- `services/commands/<any_other_domain>/` — contract `06_commands.md` defines the pattern
-- `services/queries/<any_other_domain>/` — contract `07_queries.md` defines the pattern
-- `domain/<any_other_domain>/` — contract `08_domain.md` defines the pattern
-- `routers/api_v1/<any_existing_router>.py` — contract `09_routers.md` defines the pattern
+> "Am I reading this to understand **how to write** my new code — or to understand **what this existing code does**?"
 
-May read (factual lookup only, not pattern reference):
-- Files listed in "Implementation plan" steps as being created or modified
-- Model files for exact field names or column types
-- `__init__.py` files to verify existing import paths
+- **How to write** → read the contract instead (`06_commands.md`, `09_routers.md`, etc.)
+- **What exists** → reading is legitimate (existing behavior, return shapes, field names, module connections)
+
+Prohibited (pattern reads — contract already covers these):
+- Reading another command to understand session.add / flush / error-raising shape → `06_commands.md`
+- Reading another router to understand handler wiring → `09_routers.md`
+- Reading another serializer to understand output shape → `46_serialization.md`
+
+Permitted (relational reads — understanding what exists):
+- Reading an existing endpoint to see what it currently returns
+- Reading model files for exact field names and types
+- Reading `__init__.py` files to verify import paths
+- Reading related domain files to understand how existing logic connects
 
 ### Skill selection
 

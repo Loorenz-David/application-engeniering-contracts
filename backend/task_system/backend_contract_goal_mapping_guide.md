@@ -13,22 +13,32 @@ Purpose: backend-local routing guide that selects contracts from `../architectur
 
 ## Pattern authority rule
 
-**Contracts are the sole pattern source. Reading an existing implementation file as a pattern reference is a protocol violation.**
+**Read contracts to learn how to write. Read implementation files to learn what already exists.**
 
-If a contract defines a structure — command signature, request parser shape, serializer structure, router skeleton, transaction boundary — the contract is the authority. No implementation file may be read to "confirm" or "see how it's done" for that pattern.
+This is the core discipline. The two questions have different answers:
 
-**Permitted reads:**
-- Files being directly created or modified in this task
-- Model files for exact field names or column types (factual lookup)
-- `__init__.py` files to verify existing import paths
+| Question | Source |
+|---|---|
+| How do I structure a command? | `06_commands.md` |
+| How do I wire a router handler? | `09_routers.md` |
+| How do I write a serializer? | `46_serialization.md` |
+| What does this existing endpoint return? | Implementation file |
+| What fields does this model have? | Implementation file or model file |
+| How does service X connect to router Y? | Implementation file |
+| What does an existing command do for context? | Implementation file |
 
-**Forbidden reads (pattern reference):**
-- `services/commands/<other_domain>/` — `06_commands.md` is the pattern source
-- `services/queries/<other_domain>/` — `07_queries.md` is the pattern source
-- `domain/<other_domain>/serializers.py` — `46_serialization.md` is the pattern source
-- `routers/api_v1/<existing_router>.py` — `09_routers.md` is the pattern source
+**The test before opening any implementation file:**
 
-If a contract feels ambiguous, the correct response is to re-read that contract carefully or ask for clarification — not to open an implementation file for guidance.
+> "Am I reading this to understand how to structure my new code — or to understand what this existing code does?"
+
+- If **how to write** → stop, read the contract instead. If the contract feels incomplete, ask for clarification.
+- If **what exists** → read it. Understanding existing behavior, return shapes, module connections, and field names is legitimate and expected.
+
+**The specific drift to avoid:**
+
+Reading `services/commands/<other_domain>/some_command.py` to understand the command structure (session.add, flush, error raising) when `06_commands.md` already defines it is a protocol violation — it consumes tokens without adding information the contract doesn't already contain. The same applies to reading an existing router to understand the handler skeleton when `09_routers.md` defines it.
+
+If a contract's pattern feels ambiguous, re-read it carefully or ask for clarification — never open an unrelated implementation file as a substitute.
 
 ---
 
