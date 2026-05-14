@@ -367,14 +367,15 @@ if [ -d "$CANONICAL_TESTS_DIR" ]; then
   mkdir -p "$TESTS_DEST_DIR"
   cp -r "$CANONICAL_TESTS_DIR/bootstrap_tests" "$TESTS_DEST_DIR/"
   mkdir -p "$TESTS_DEST_DIR/test_summary"
-  # Replace the canonical my_app placeholder with the real module slug
-  find "$TESTS_DEST_DIR" -type f \( -name "*.sh" -o -name "*.py" -o -name "*.md" \) | while IFS= read -r f; do
-    if [[ "$OSTYPE" == "darwin"* ]]; then
-      sed -i '' "s/my_app/$APP_SLUG/g" "$f"
-    else
-      sed -i "s/my_app/$APP_SLUG/g" "$f"
-    fi
-  done
+  # Replace the canonical my_app placeholder with the real module slug.
+  # Use -exec rather than pipe-to-while so $APP_SLUG is in scope.
+  if [[ "$OSTYPE" == "darwin"* ]]; then
+    find "$TESTS_DEST_DIR" -type f \( -name "*.sh" -o -name "*.py" -o -name "*.md" \) \
+      -exec sed -i '' "s/my_app/$APP_SLUG/g" {} +
+  else
+    find "$TESTS_DEST_DIR" -type f \( -name "*.sh" -o -name "*.py" -o -name "*.md" \) \
+      -exec sed -i "s/my_app/$APP_SLUG/g" {} +
+  fi
   echo "  ✓ Test suite installed at $TESTS_DEST_DIR (my_app → $APP_SLUG)"
 else
   echo "  ⚠ Canonical tests not found at $CANONICAL_TESTS_DIR — skipping"
