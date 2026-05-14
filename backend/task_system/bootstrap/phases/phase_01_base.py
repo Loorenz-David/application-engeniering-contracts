@@ -650,7 +650,6 @@ asyncpg==0.30.0
 python-socketio==5.12.1
 PyJWT==2.10.1
 bcrypt==4.3.0
-passlib[bcrypt]==1.7.4
 redis==5.2.1
 rq==2.3.2
 typer==0.15.3

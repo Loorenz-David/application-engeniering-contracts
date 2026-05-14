@@ -67,8 +67,8 @@ PYEOF
 # ---------------------------------------------------------------------------
 echo "Step 1: Generate bcrypt hash for password Test1234!"
 PW_HASH=$(python3 -c "
-from passlib.context import CryptContext
-print(CryptContext(schemes=['bcrypt'], deprecated='auto').hash('Test1234!'))
+import bcrypt
+print(bcrypt.hashpw('Test1234!'.encode(), bcrypt.gensalt()).decode())
 ")
 echo "   Hash generated (truncated): ${PW_HASH:0:30}..."
 echo ""

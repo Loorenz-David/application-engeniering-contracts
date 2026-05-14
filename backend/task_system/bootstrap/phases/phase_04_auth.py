@@ -307,8 +307,8 @@ def _normalize_api_path(key: str) -> str:
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
+import bcrypt
 import jwt
-from passlib.context import CryptContext
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
@@ -321,7 +321,9 @@ from {a}.models.tables.workspaces.workspace import Workspace
 from {a}.models.tables.workspaces.workspace_membership import WorkspaceMembership
 from {a}.services.context import ServiceContext
 
-_pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+def _verify_password(plain: str, hashed: str) -> bool:
+    return bcrypt.checkpw(plain.encode(), hashed.encode())
 
 
 async def sign_in_user(ctx: ServiceContext) -> dict:
@@ -333,7 +335,7 @@ async def sign_in_user(ctx: ServiceContext) -> dict:
         select(User).where((User.email == identifier) | (User.username == identifier))
     )
     user = result.scalar_one_or_none()
-    if user is None or not _pwd_context.verify(password, user.password):
+    if user is None or not _verify_password(password, user.password):
         raise PermissionDenied("Invalid credentials.")
 
     membership_result = await ctx.session.execute(
