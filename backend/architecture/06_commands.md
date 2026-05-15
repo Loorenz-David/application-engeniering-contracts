@@ -360,3 +360,53 @@ return {"record": serialize_record_full(record)}
 # Delete / archive — return empty ack
 return {}
 ```
+
+---
+
+## Domain validators vs. request validators
+
+Two different kinds of validation exist. Know which you need before creating a standalone function.
+
+| Kind | What it checks | Where it lives | Example |
+|---|---|---|---|
+| Structural | Shape or format of the value itself | `@field_validator` on the request model | `email` contains `@`, `name` is not blank |
+| Business policy | A rule about what values the system accepts | Domain function, called from the command body | Minimum password length, disallowed username reserved words |
+
+**Structural validation belongs in `@field_validator`**, not in a separate `domain/validators.py` function. A standalone function that only checks format (e.g. `validate_email_format`) is the wrong layer: it duplicates what Pydantic already provides and runs at the wrong time (after parsing instead of during).
+
+**Business policy validation belongs in the domain layer** as a pure function with no I/O — called by the command after the request is parsed:
+
+```python
+# domain/users/password_policy.py
+def validate_password_policy(password: str) -> None:
+    if len(password) < 8:
+        raise ValidationError("Password must be at least 8 characters long.")
+```
+
+If you are writing a domain function that calls `split("@")` or `strip()` to check string shape — stop. That is a `@field_validator`.
+
+---
+
+## Domain guards — when to use them
+
+A domain guard is a pure predicate that checks business authorization beyond role membership:
+
+```python
+# domain/cases/case_guards.py
+def can_close_case(case_state: str, caller_role: str) -> bool:
+    """Only admins can close cases that are already escalated."""
+    return caller_role == "admin" or case_state != "escalated"
+```
+
+Guards answer questions the role system cannot: "is this operation allowed given the current state of this entity?" They are called from the command body after the entity is loaded.
+
+**Do not write a domain guard if the only check is role membership.** Router-level `require_roles([ADMIN])` already enforces that. A guard that only wraps `caller_role == "admin"` is dead code — it will never be called because unauthorized requests are rejected before they reach the command.
+
+Decision:
+
+| Question the guard answers | Use guard? |
+|---|---|
+| Does the caller hold the required role? | No — use `require_roles` on the router |
+| Is this operation allowed given the entity's current state? | Yes |
+| Does the caller own this resource (e.g., created_by_id matches)? | Yes |
+| Is a combination of role + state required? | Yes |

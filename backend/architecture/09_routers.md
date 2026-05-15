@@ -79,10 +79,27 @@ routers/
 │   └── roles.py             # ADMIN, MEMBER, FIELD constants
 └── api_v1/
     ├── __init__.py           # register_v1_routers(app)
-    ├── record.py
-    ├── category.py
-    └── auth.py
+    ├── auth.py              # sign-in, logout, token refresh — auth flows only
+    ├── users.py             # user CRUD, profile, registration
+    ├── cases.py             # case domain
+    ├── events.py            # event domain
+    └── ...                  # one file per domain resource
 ```
+
+### Router domain ownership
+
+Each router file owns one domain. **Do not add routes to an existing router because it is convenient or nearby.** The question to ask is: "what resource does this operation act on?"
+
+| Domain | Router file | Prefix | What belongs here |
+|---|---|---|---|
+| Auth flows | `auth.py` | `/api/v1/auth` | sign-in, logout, refresh — operations on tokens and sessions |
+| Users | `users.py` | `/api/v1/users` | register, get profile, update profile, list users |
+| Cases | `cases.py` | `/api/v1/cases` | CRUD on case entities |
+| Events | `events.py` | `/api/v1/events` | CRUD on event entities |
+
+**The auth router does not own user registration.** Registration creates a `User` record — it belongs in `users.py`. The auth router owns operations on auth tokens (sign-in, logout, refresh). If registration and sign-in are both needed at launch, register them in their correct routers from the start.
+
+Anti-pattern: adding `/auth/register` because the register command imports auth helpers or because the auth router was open at the time. The route path and router file both declare the domain — keep them consistent.
 
 ---
 
